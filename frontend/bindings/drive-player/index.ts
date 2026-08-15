@@ -11,6 +11,7 @@ export type {
     FileEntry,
     PlaybackProgressResult,
     PlaybackProgressStats,
+    QuarkIDCacheStats,
     RedirectCacheEntry,
     ThumbnailCacheStats,
     ThumbnailResult

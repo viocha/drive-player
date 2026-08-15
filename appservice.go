@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -23,7 +24,8 @@ import (
 
 const (
 	defaultWebDAVEndpoint         = "https://webdav.123pan.cn/webdav"
-	defaultCacheTTL               = 30
+	defaultURLCacheTTL            = 30
+	defaultQuarkIDCacheTTL        = 30
 	defaultThumbnailMaxAgeDays    = 30
 	defaultThumbnailMaxSizeMB     = 512
 	defaultThumbnailOffsetSeconds = 5
@@ -39,24 +41,37 @@ const (
 	maxPlaybackMaxAgeDays         = 3650
 	minPlaybackMaxSizeMB          = 1
 	maxPlaybackMaxSizeMB          = 1024
+	minQuarkIDCacheTTLMinutes     = 1
+	maxQuarkIDCacheTTLMinutes     = 1440
+	provider123                   = "123"
+	providerQuark                 = "quark"
 )
 
 type AppState struct {
-	Connected              bool   `json:"connected"`
-	Username               string `json:"username"`
-	Password               string `json:"password"`
-	Endpoint               string `json:"endpoint"`
-	CacheTTLMinutes        int    `json:"cacheTTLMinutes"`
-	ThumbnailMaxAgeDays    int    `json:"thumbnailMaxAgeDays"`
-	ThumbnailMaxSizeMB     int    `json:"thumbnailMaxSizeMB"`
-	ThumbnailOffsetSeconds int    `json:"thumbnailOffsetSeconds"`
-	PlaybackMaxAgeDays     int    `json:"playbackMaxAgeDays"`
-	PlaybackMaxSizeMB      int    `json:"playbackMaxSizeMB"`
-	StorageDirectory       string `json:"storageDirectory"`
-	ConfigPath             string `json:"configPath"`
-	ThumbnailDirectory     string `json:"thumbnailDirectory"`
-	PlaybackProgressPath   string `json:"playbackProgressPath"`
-	ProxyBaseURL           string `json:"proxyBaseUrl"`
+	Connected                    bool   `json:"connected"`
+	Connected123                 bool   `json:"connected123"`
+	ConnectedQuark               bool   `json:"connectedQuark"`
+	Provider                     string `json:"provider"`
+	Username                     string `json:"username"`
+	Password                     string `json:"password"`
+	QuarkCookie                  string `json:"quarkCookie"`
+	Endpoint                     string `json:"endpoint"`
+	QuarkEndpoint                string `json:"quarkEndpoint"`
+	WebDAVCacheTTLMinutes        int    `json:"webdavCacheTTLMinutes"`
+	QuarkDownloadCacheTTLMinutes int    `json:"quarkDownloadCacheTTLMinutes"`
+	QuarkIDCacheTTLMinutes       int    `json:"quarkIDCacheTTLMinutes"`
+	ThumbnailMaxAgeDays          int    `json:"thumbnailMaxAgeDays"`
+	ThumbnailMaxSizeMB           int    `json:"thumbnailMaxSizeMB"`
+	ThumbnailOffsetSeconds       int    `json:"thumbnailOffsetSeconds"`
+	PlaybackMaxAgeDays           int    `json:"playbackMaxAgeDays"`
+	PlaybackMaxSizeMB            int    `json:"playbackMaxSizeMB"`
+	StorageDirectory             string `json:"storageDirectory"`
+	ConfigPath                   string `json:"configPath"`
+	ThumbnailDirectory           string `json:"thumbnailDirectory"`
+	PlaybackProgressPath         string `json:"playbackProgressPath"`
+	ProxyBaseURL                 string `json:"proxyBaseUrl"`
+	WebDAVProxyBaseURL           string `json:"webdavProxyBaseUrl"`
+	QuarkProxyBaseURL            string `json:"quarkProxyBaseUrl"`
 }
 
 type FileEntry struct {
@@ -69,14 +84,18 @@ type FileEntry struct {
 }
 
 type diskConfig struct {
-	CacheTTLMinutes        int    `json:"cacheTTLMinutes"`
-	ThumbnailMaxAgeDays    int    `json:"thumbnailMaxAgeDays"`
-	ThumbnailMaxSizeMB     int    `json:"thumbnailMaxSizeMB"`
-	ThumbnailOffsetSeconds int    `json:"thumbnailOffsetSeconds"`
-	PlaybackMaxAgeDays     int    `json:"playbackMaxAgeDays"`
-	PlaybackMaxSizeMB      int    `json:"playbackMaxSizeMB"`
-	Username               string `json:"username"`
-	Password               string `json:"password"`
+	WebDAVCacheTTLMinutes        int    `json:"webdavCacheTTLMinutes"`
+	QuarkDownloadCacheTTLMinutes int    `json:"quarkDownloadCacheTTLMinutes"`
+	QuarkIDCacheTTLMinutes       int    `json:"quarkIDCacheTTLMinutes"`
+	ThumbnailMaxAgeDays          int    `json:"thumbnailMaxAgeDays"`
+	ThumbnailMaxSizeMB           int    `json:"thumbnailMaxSizeMB"`
+	ThumbnailOffsetSeconds       int    `json:"thumbnailOffsetSeconds"`
+	PlaybackMaxAgeDays           int    `json:"playbackMaxAgeDays"`
+	PlaybackMaxSizeMB            int    `json:"playbackMaxSizeMB"`
+	Username                     string `json:"username"`
+	Password                     string `json:"password"`
+	Provider                     string `json:"provider"`
+	QuarkCookie                  string `json:"quarkCookie"`
 }
 
 type credentials struct {
@@ -85,15 +104,19 @@ type credentials struct {
 }
 
 type AppService struct {
-	mu          sync.RWMutex
-	credentials credentials
-	connected   bool
-	config      diskConfig
-	configPath  string
-	proxy       *WebDAVProxy
-	thumbnails  *ThumbnailCache
-	progress    *PlaybackProgressStore
-	httpClient  *http.Client
+	mu             sync.RWMutex
+	credentials    credentials
+	provider       string
+	quarkCookie    string
+	connected123   bool
+	connectedQuark bool
+	config         diskConfig
+	configPath     string
+	proxy          *WebDAVProxy
+	quark          *QuarkDrive
+	thumbnails     *ThumbnailCache
+	progress       *PlaybackProgressStore
+	httpClient     *http.Client
 }
 
 func NewAppService() (*AppService, error) {
@@ -103,18 +126,27 @@ func NewAppService() (*AppService, error) {
 	}
 
 	config := diskConfig{
-		CacheTTLMinutes:        defaultCacheTTL,
-		ThumbnailMaxAgeDays:    defaultThumbnailMaxAgeDays,
-		ThumbnailMaxSizeMB:     defaultThumbnailMaxSizeMB,
-		ThumbnailOffsetSeconds: defaultThumbnailOffsetSeconds,
-		PlaybackMaxAgeDays:     defaultPlaybackMaxAgeDays,
-		PlaybackMaxSizeMB:      defaultPlaybackMaxSizeMB,
+		WebDAVCacheTTLMinutes:        defaultURLCacheTTL,
+		QuarkDownloadCacheTTLMinutes: defaultURLCacheTTL,
+		QuarkIDCacheTTLMinutes:       defaultQuarkIDCacheTTL,
+		ThumbnailMaxAgeDays:          defaultThumbnailMaxAgeDays,
+		ThumbnailMaxSizeMB:           defaultThumbnailMaxSizeMB,
+		ThumbnailOffsetSeconds:       defaultThumbnailOffsetSeconds,
+		PlaybackMaxAgeDays:           defaultPlaybackMaxAgeDays,
+		PlaybackMaxSizeMB:            defaultPlaybackMaxSizeMB,
+		Provider:                     provider123,
 	}
 	if data, err := os.ReadFile(configPath); err == nil {
 		_ = json.Unmarshal(data, &config)
 	}
-	if config.CacheTTLMinutes < 1 || config.CacheTTLMinutes > 24*60 {
-		config.CacheTTLMinutes = defaultCacheTTL
+	if config.WebDAVCacheTTLMinutes < 1 || config.WebDAVCacheTTLMinutes > 24*60 {
+		config.WebDAVCacheTTLMinutes = defaultURLCacheTTL
+	}
+	if config.QuarkDownloadCacheTTLMinutes < 1 || config.QuarkDownloadCacheTTLMinutes > 24*60 {
+		config.QuarkDownloadCacheTTLMinutes = defaultURLCacheTTL
+	}
+	if config.QuarkIDCacheTTLMinutes < minQuarkIDCacheTTLMinutes || config.QuarkIDCacheTTLMinutes > maxQuarkIDCacheTTLMinutes {
+		config.QuarkIDCacheTTLMinutes = defaultQuarkIDCacheTTL
 	}
 	if config.ThumbnailMaxAgeDays < minThumbnailMaxAgeDays || config.ThumbnailMaxAgeDays > maxThumbnailMaxAgeDays {
 		config.ThumbnailMaxAgeDays = defaultThumbnailMaxAgeDays
@@ -132,8 +164,16 @@ func NewAppService() (*AppService, error) {
 		config.PlaybackMaxSizeMB = defaultPlaybackMaxSizeMB
 	}
 
-	proxy, err := NewWebDAVProxy(defaultWebDAVEndpoint, time.Duration(config.CacheTTLMinutes)*time.Minute)
+	proxy, err := NewWebDAVProxy(defaultWebDAVEndpoint, time.Duration(config.WebDAVCacheTTLMinutes)*time.Minute)
 	if err != nil {
+		return nil, err
+	}
+	quark, err := NewQuarkDrive(
+		time.Duration(config.QuarkDownloadCacheTTLMinutes)*time.Minute,
+		time.Duration(config.QuarkIDCacheTTLMinutes)*time.Minute,
+	)
+	if err != nil {
+		_ = proxy.Close()
 		return nil, err
 	}
 	thumbnailCache, err := NewThumbnailCache(
@@ -143,6 +183,7 @@ func NewAppService() (*AppService, error) {
 	)
 	if err != nil {
 		_ = proxy.Close()
+		_ = quark.Close()
 		return nil, err
 	}
 	playbackProgress, err := NewPlaybackProgressStore(
@@ -152,12 +193,14 @@ func NewAppService() (*AppService, error) {
 	)
 	if err != nil {
 		_ = proxy.Close()
+		_ = quark.Close()
 		return nil, err
 	}
 	service := &AppService{
 		config:     config,
 		configPath: configPath,
 		proxy:      proxy,
+		quark:      quark,
 		thumbnails: thumbnailCache,
 		progress:   playbackProgress,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
@@ -165,6 +208,8 @@ func NewAppService() (*AppService, error) {
 	if config.Username != "" && config.Password != "" {
 		service.credentials = credentials{username: config.Username, password: config.Password}
 	}
+	service.provider = config.Provider
+	service.quarkCookie = config.QuarkCookie
 	return service, nil
 }
 
@@ -181,29 +226,47 @@ func resolveConfigPath() (string, error) {
 }
 
 func (s *AppService) close() error {
-	return s.proxy.Close()
+	proxyErr := s.proxy.Close()
+	quarkErr := s.quark.Close()
+	if proxyErr != nil {
+		return proxyErr
+	}
+	return quarkErr
 }
 
 func (s *AppService) GetState() AppState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	storageDirectory := filepath.Dir(s.configPath)
+	proxyBaseURL := s.proxy.BaseURL()
+	if s.provider == providerQuark {
+		proxyBaseURL = s.quark.BaseURL()
+	}
 	return AppState{
-		Connected:              s.connected,
-		Username:               s.credentials.username,
-		Password:               s.credentials.password,
-		Endpoint:               defaultWebDAVEndpoint,
-		CacheTTLMinutes:        s.config.CacheTTLMinutes,
-		ThumbnailMaxAgeDays:    s.config.ThumbnailMaxAgeDays,
-		ThumbnailMaxSizeMB:     s.config.ThumbnailMaxSizeMB,
-		ThumbnailOffsetSeconds: s.config.ThumbnailOffsetSeconds,
-		PlaybackMaxAgeDays:     s.config.PlaybackMaxAgeDays,
-		PlaybackMaxSizeMB:      s.config.PlaybackMaxSizeMB,
-		StorageDirectory:       storageDirectory,
-		ConfigPath:             s.configPath,
-		ThumbnailDirectory:     filepath.Join(storageDirectory, "thumbnails"),
-		PlaybackProgressPath:   s.progress.Path(),
-		ProxyBaseURL:           s.proxy.BaseURL(),
+		Connected:                    s.connected123 || s.connectedQuark,
+		Connected123:                 s.connected123,
+		ConnectedQuark:               s.connectedQuark,
+		Provider:                     s.provider,
+		Username:                     s.credentials.username,
+		Password:                     s.credentials.password,
+		QuarkCookie:                  s.quarkCookie,
+		Endpoint:                     defaultWebDAVEndpoint,
+		QuarkEndpoint:                defaultQuarkAPIEndpoint,
+		WebDAVCacheTTLMinutes:        s.config.WebDAVCacheTTLMinutes,
+		QuarkDownloadCacheTTLMinutes: s.config.QuarkDownloadCacheTTLMinutes,
+		QuarkIDCacheTTLMinutes:       s.config.QuarkIDCacheTTLMinutes,
+		ThumbnailMaxAgeDays:          s.config.ThumbnailMaxAgeDays,
+		ThumbnailMaxSizeMB:           s.config.ThumbnailMaxSizeMB,
+		ThumbnailOffsetSeconds:       s.config.ThumbnailOffsetSeconds,
+		PlaybackMaxAgeDays:           s.config.PlaybackMaxAgeDays,
+		PlaybackMaxSizeMB:            s.config.PlaybackMaxSizeMB,
+		StorageDirectory:             storageDirectory,
+		ConfigPath:                   s.configPath,
+		ThumbnailDirectory:           filepath.Join(storageDirectory, "thumbnails"),
+		PlaybackProgressPath:         s.progress.Path(),
+		ProxyBaseURL:                 proxyBaseURL,
+		WebDAVProxyBaseURL:           s.proxy.BaseURL(),
+		QuarkProxyBaseURL:            s.quark.BaseURL(),
 	}
 }
 
@@ -219,15 +282,24 @@ func (s *AppService) Login(ctx context.Context, username, password string) (AppS
 	}
 
 	s.mu.Lock()
+	previousConfig := s.config
+	previousCredentials := s.credentials
+	previousProvider := s.provider
+	previousConnected := s.connected123
 	s.config.Username = username
 	s.config.Password = password
+	s.config.Provider = provider123
 	config := s.config
 	s.credentials = creds
-	s.connected = true
+	s.provider = provider123
+	s.connected123 = true
 	s.mu.Unlock()
 	if err := s.saveConfig(config); err != nil {
 		s.mu.Lock()
-		s.connected = false
+		s.config = previousConfig
+		s.credentials = previousCredentials
+		s.provider = previousProvider
+		s.connected123 = previousConnected
 		s.mu.Unlock()
 		return AppState{}, err
 	}
@@ -237,80 +309,247 @@ func (s *AppService) Login(ctx context.Context, username, password string) (AppS
 	return s.GetState(), nil
 }
 
+func (s *AppService) LoginQuark(ctx context.Context, cookie string) (AppState, error) {
+	cookie = strings.TrimSpace(cookie)
+	if cookie == "" {
+		return AppState{}, errors.New("Cookie 不能为空")
+	}
+	if err := s.quark.ValidateCookie(ctx, cookie); err != nil {
+		return AppState{}, fmt.Errorf("夸克网盘登录失败: %w", err)
+	}
+
+	s.mu.Lock()
+	previousConfig := s.config
+	previousProvider := s.provider
+	previousCookie := s.quarkCookie
+	previousConnected := s.connectedQuark
+	s.config.Provider = providerQuark
+	s.config.QuarkCookie = cookie
+	config := s.config
+	s.provider = providerQuark
+	s.quarkCookie = cookie
+	s.connectedQuark = true
+	s.mu.Unlock()
+	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.config = previousConfig
+		s.provider = previousProvider
+		s.quarkCookie = previousCookie
+		s.connectedQuark = previousConnected
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	s.quark.SetCookie(cookie)
+	s.quark.ClearIDCache()
+	s.quark.ClearDownloadCache()
+	return s.GetState(), nil
+}
+
 func (s *AppService) Logout() AppState {
 	s.mu.Lock()
-	s.config.Username = ""
-	s.config.Password = ""
+	provider := s.provider
+	if provider == providerQuark {
+		s.config.QuarkCookie = ""
+		s.quarkCookie = ""
+		s.connectedQuark = false
+		if s.connected123 {
+			s.provider = provider123
+		}
+	} else {
+		s.config.Username = ""
+		s.config.Password = ""
+		s.credentials = credentials{}
+		s.connected123 = false
+		if s.connectedQuark {
+			s.provider = providerQuark
+		}
+	}
+	s.config.Provider = s.provider
 	config := s.config
-	s.credentials = credentials{}
-	s.connected = false
 	s.mu.Unlock()
 	_ = s.saveConfig(config)
-	s.proxy.SetCredentials("", "")
-	s.proxy.ClearCache()
+	if provider == providerQuark {
+		s.quark.SetCookie("")
+		s.quark.ClearIDCache()
+		s.quark.ClearDownloadCache()
+	} else {
+		s.proxy.SetCredentials("", "")
+		s.proxy.ClearCache()
+	}
 	return s.GetState()
 }
 
+func (s *AppService) SwitchProvider(provider string) (AppState, error) {
+	provider = strings.TrimSpace(provider)
+	if provider != provider123 && provider != providerQuark {
+		return AppState{}, errors.New("未知网盘类型")
+	}
+
+	s.mu.Lock()
+	if (provider == provider123 && !s.connected123) || (provider == providerQuark && !s.connectedQuark) {
+		s.mu.Unlock()
+		return AppState{}, errors.New("目标网盘尚未登录")
+	}
+	previousProvider := s.provider
+	previousConfigProvider := s.config.Provider
+	s.provider = provider
+	s.config.Provider = provider
+	config := s.config
+	s.mu.Unlock()
+
+	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.provider = previousProvider
+		s.config.Provider = previousConfigProvider
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	return s.GetState(), nil
+}
+
 func (s *AppService) ListDirectory(ctx context.Context, remotePath string) ([]FileEntry, error) {
+	provider, err := s.currentProvider()
+	if err != nil {
+		return nil, err
+	}
+	remotePath = normalizeRemotePath(remotePath)
+	if provider == providerQuark {
+		return s.quark.ListDirectory(ctx, remotePath)
+	}
 	creds, err := s.currentCredentials()
 	if err != nil {
 		return nil, err
 	}
-	return s.listDirectoryWithCredentials(ctx, normalizeRemotePath(remotePath), creds)
+	return s.listDirectoryWithCredentials(ctx, remotePath, creds)
 }
 
 func (s *AppService) GetPlaybackURL(remotePath string) (string, error) {
+	provider, err := s.currentProvider()
+	if err != nil {
+		return "", err
+	}
+	if provider == providerQuark {
+		return s.quark.URLForPath(normalizeRemotePath(remotePath)), nil
+	}
 	if _, err := s.currentCredentials(); err != nil {
 		return "", err
 	}
 	return s.proxy.URLForPath(normalizeRemotePath(remotePath)), nil
 }
 
-func (s *AppService) ListRedirectCache() []RedirectCacheEntry {
-	return s.proxy.CacheEntries()
+func (s *AppService) ListRedirectCache(provider string) ([]RedirectCacheEntry, error) {
+	switch strings.TrimSpace(provider) {
+	case providerQuark:
+		return s.quark.DownloadCacheEntries(), nil
+	case provider123:
+		return s.proxy.CacheEntries(), nil
+	default:
+		return nil, errors.New("未知网盘类型")
+	}
 }
 
-func (s *AppService) ClearRedirectCache() {
-	s.proxy.ClearCache()
+func (s *AppService) ClearRedirectCache(provider string) error {
+	switch strings.TrimSpace(provider) {
+	case providerQuark:
+		s.quark.ClearDownloadCache()
+		return nil
+	case provider123:
+		s.proxy.ClearCache()
+		return nil
+	default:
+		return errors.New("未知网盘类型")
+	}
 }
 
-func (s *AppService) SetCacheTTL(minutes int) (AppState, error) {
+func (s *AppService) SetWebDAVCacheTTL(minutes int) (AppState, error) {
 	if minutes < 1 || minutes > 24*60 {
-		return AppState{}, errors.New("缓存时间必须在 1 到 1440 分钟之间")
+		return AppState{}, errors.New("123 URL 缓存时间必须在 1 到 1440 分钟之间")
 	}
 
 	s.mu.Lock()
-	s.config.CacheTTLMinutes = minutes
+	previous := s.config
+	s.config.WebDAVCacheTTLMinutes = minutes
 	config := s.config
 	s.mu.Unlock()
 
 	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.config = previous
+		s.mu.Unlock()
 		return AppState{}, err
 	}
 	s.proxy.SetTTL(time.Duration(minutes) * time.Minute)
 	return s.GetState(), nil
 }
 
+func (s *AppService) SetQuarkDownloadCacheTTL(minutes int) (AppState, error) {
+	if minutes < 1 || minutes > 24*60 {
+		return AppState{}, errors.New("夸克下载 URL 缓存时间必须在 1 到 1440 分钟之间")
+	}
+
+	s.mu.Lock()
+	previous := s.config
+	s.config.QuarkDownloadCacheTTLMinutes = minutes
+	config := s.config
+	s.mu.Unlock()
+
+	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.config = previous
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	s.quark.SetDownloadTTL(time.Duration(minutes) * time.Minute)
+	return s.GetState(), nil
+}
+
+func (s *AppService) GetQuarkIDCacheStats() QuarkIDCacheStats {
+	return s.quark.IDCacheStats()
+}
+
+func (s *AppService) ClearQuarkIDCache() QuarkIDCacheStats {
+	return s.quark.ClearIDCache()
+}
+
+func (s *AppService) SetQuarkIDCacheTTL(minutes int) (AppState, error) {
+	if minutes < minQuarkIDCacheTTLMinutes || minutes > maxQuarkIDCacheTTLMinutes {
+		return AppState{}, fmt.Errorf("夸克路径 ID 缓存时间必须在 %d 到 %d 分钟之间", minQuarkIDCacheTTLMinutes, maxQuarkIDCacheTTLMinutes)
+	}
+	s.mu.Lock()
+	previous := s.config
+	s.config.QuarkIDCacheTTLMinutes = minutes
+	config := s.config
+	s.mu.Unlock()
+	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.config = previous
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	s.quark.SetIDTTL(time.Duration(minutes) * time.Minute)
+	return s.GetState(), nil
+}
+
 func (s *AppService) GetThumbnail(remotePath, modifiedAt string) (ThumbnailResult, error) {
-	creds, err := s.currentCredentials()
+	accountKey, err := s.currentAccountKey()
 	if err != nil {
 		return ThumbnailResult{}, err
 	}
 	s.mu.RLock()
 	offsetSeconds := s.config.ThumbnailOffsetSeconds
 	s.mu.RUnlock()
-	return s.thumbnails.Get(thumbnailCacheKey(creds.username, remotePath, modifiedAt, offsetSeconds))
+	return s.thumbnails.Get(thumbnailCacheKey(accountKey, remotePath, modifiedAt, offsetSeconds))
 }
 
 func (s *AppService) SaveThumbnail(remotePath, modifiedAt, dataURL string) (ThumbnailCacheStats, error) {
-	creds, err := s.currentCredentials()
+	accountKey, err := s.currentAccountKey()
 	if err != nil {
 		return ThumbnailCacheStats{}, err
 	}
 	s.mu.RLock()
 	offsetSeconds := s.config.ThumbnailOffsetSeconds
 	s.mu.RUnlock()
-	return s.thumbnails.Save(thumbnailCacheKey(creds.username, remotePath, modifiedAt, offsetSeconds), dataURL)
+	return s.thumbnails.Save(thumbnailCacheKey(accountKey, remotePath, modifiedAt, offsetSeconds), dataURL)
 }
 
 func (s *AppService) GetThumbnailCacheStats() (ThumbnailCacheStats, error) {
@@ -353,19 +592,19 @@ func (s *AppService) SetThumbnailSettings(maxAgeDays, maxSizeMB, offsetSeconds i
 }
 
 func (s *AppService) GetPlaybackProgress(remotePath string) (PlaybackProgressResult, error) {
-	creds, err := s.currentCredentials()
+	accountKey, err := s.currentAccountKey()
 	if err != nil {
 		return PlaybackProgressResult{}, err
 	}
-	return s.progress.Get(creds.username, normalizeRemotePath(remotePath))
+	return s.progress.Get(accountKey, normalizeRemotePath(remotePath))
 }
 
 func (s *AppService) SavePlaybackProgress(remotePath string, position, duration float64) (PlaybackProgressStats, error) {
-	creds, err := s.currentCredentials()
+	accountKey, err := s.currentAccountKey()
 	if err != nil {
 		return PlaybackProgressStats{}, err
 	}
-	return s.progress.Save(creds.username, normalizeRemotePath(remotePath), position, duration)
+	return s.progress.Save(accountKey, normalizeRemotePath(remotePath), position, duration)
 }
 
 func (s *AppService) GetPlaybackProgressStats() (PlaybackProgressStats, error) {
@@ -439,10 +678,47 @@ func (s *AppService) saveConfig(config diskConfig) error {
 func (s *AppService) currentCredentials() (credentials, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if !s.connected || s.credentials.username == "" || s.credentials.password == "" {
+	if !s.connected123 || s.provider != provider123 || s.credentials.username == "" || s.credentials.password == "" {
 		return credentials{}, errors.New("尚未登录 WebDAV")
 	}
 	return s.credentials, nil
+}
+
+func (s *AppService) currentProvider() (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	switch s.provider {
+	case provider123:
+		if !s.connected123 {
+			return "", errors.New("123 云盘尚未登录")
+		}
+	case providerQuark:
+		if !s.connectedQuark {
+			return "", errors.New("夸克网盘尚未登录")
+		}
+	default:
+		return "", errors.New("未知网盘类型")
+	}
+	return s.provider, nil
+}
+
+func (s *AppService) currentAccountKey() (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.provider == providerQuark {
+		if !s.connectedQuark || s.quarkCookie == "" {
+			return "", errors.New("尚未登录夸克网盘")
+		}
+		sum := sha256.Sum256([]byte(s.quarkCookie))
+		return fmt.Sprintf("quark:%x", sum[:]), nil
+	}
+	if s.provider != provider123 {
+		return "", errors.New("未知网盘类型")
+	}
+	if !s.connected123 || s.credentials.username == "" || s.credentials.password == "" {
+		return "", errors.New("尚未登录 WebDAV")
+	}
+	return s.credentials.username, nil
 }
 
 func (s *AppService) listDirectoryWithCredentials(ctx context.Context, remotePath string, creds credentials) ([]FileEntry, error) {

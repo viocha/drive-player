@@ -20,7 +20,7 @@ func main() {
 	var mainWindow *application.WebviewWindow
 	app := application.New(application.Options{
 		Name:        "Drive Player",
-		Description: "123 Cloud Drive WebDAV video player",
+		Description: "Cloud drive video player",
 		Windows:     platformWindowsOptions(),
 		SingleInstance: &application.SingleInstanceOptions{
 			UniqueID: "com.drive-player.webdav",

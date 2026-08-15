@@ -13,8 +13,12 @@ export function ClearPlaybackProgress(): $CancellablePromise<$models.PlaybackPro
     return $Call.ByID(1808486217);
 }
 
-export function ClearRedirectCache(): $CancellablePromise<void> {
-    return $Call.ByID(3571716791);
+export function ClearQuarkIDCache(): $CancellablePromise<$models.QuarkIDCacheStats> {
+    return $Call.ByID(3346467616);
+}
+
+export function ClearRedirectCache(provider: string): $CancellablePromise<void> {
+    return $Call.ByID(3571716791, provider);
 }
 
 export function ClearThumbnailCache(): $CancellablePromise<$models.ThumbnailCacheStats> {
@@ -33,6 +37,10 @@ export function GetPlaybackURL(remotePath: string): $CancellablePromise<string> 
     return $Call.ByID(3299233076, remotePath);
 }
 
+export function GetQuarkIDCacheStats(): $CancellablePromise<$models.QuarkIDCacheStats> {
+    return $Call.ByID(3402728252);
+}
+
 export function GetState(): $CancellablePromise<$models.AppState> {
     return $Call.ByID(800887515);
 }
@@ -49,12 +57,16 @@ export function ListDirectory(remotePath: string): $CancellablePromise<$models.F
     return $Call.ByID(1954761069, remotePath);
 }
 
-export function ListRedirectCache(): $CancellablePromise<$models.RedirectCacheEntry[] | null> {
-    return $Call.ByID(1269581720);
+export function ListRedirectCache(provider: string): $CancellablePromise<$models.RedirectCacheEntry[] | null> {
+    return $Call.ByID(1269581720, provider);
 }
 
 export function Login(username: string, password: string): $CancellablePromise<$models.AppState> {
     return $Call.ByID(1052012959, username, password);
+}
+
+export function LoginQuark(cookie: string): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(2682859179, cookie);
 }
 
 export function Logout(): $CancellablePromise<$models.AppState> {
@@ -73,14 +85,26 @@ export function SaveThumbnail(remotePath: string, modifiedAt: string, dataURL: s
     return $Call.ByID(1600312045, remotePath, modifiedAt, dataURL);
 }
 
-export function SetCacheTTL(minutes: number): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(1360785668, minutes);
-}
-
 export function SetPlaybackProgressSettings(maxAgeDays: number, maxSizeMB: number): $CancellablePromise<$models.AppState> {
     return $Call.ByID(3472923853, maxAgeDays, maxSizeMB);
 }
 
+export function SetQuarkDownloadCacheTTL(minutes: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(1249516710, minutes);
+}
+
+export function SetQuarkIDCacheTTL(minutes: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(3209867527, minutes);
+}
+
 export function SetThumbnailSettings(maxAgeDays: number, maxSizeMB: number, offsetSeconds: number): $CancellablePromise<$models.AppState> {
     return $Call.ByID(99162039, maxAgeDays, maxSizeMB, offsetSeconds);
+}
+
+export function SetWebDAVCacheTTL(minutes: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(2202511669, minutes);
+}
+
+export function SwitchProvider(provider: string): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(3633461903, provider);
 }

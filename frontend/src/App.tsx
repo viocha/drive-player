@@ -22,6 +22,7 @@ import type {
   AppState,
   FileEntry,
   PlaybackProgressStats,
+  QuarkIDCacheStats,
   ThumbnailCacheStats,
 } from "../bindings/drive-player";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -61,6 +62,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 
 const Player = createPlayer({ features: videoFeatures });
 
@@ -110,12 +112,47 @@ type DirectoryCacheStats = {
   totalBytes: number;
 };
 
+type ProviderBrowseStats = {
+  directoryCache: DirectoryCacheStats;
+  scrollPositions: number;
+  backHistory: number;
+  forwardHistory: number;
+};
+
 type DirectoryCacheItem = {
   entries: FileEntry[];
   cachedAt: number;
   lastAccess: number;
   sizeBytes: number;
 };
+
+type CloudProvider = "123" | "quark";
+
+type ProviderBrowseSession = {
+  currentPath: string;
+  entries: FileEntry[];
+  thumbnailImages: Record<string, string>;
+  directoryCache: Map<string, DirectoryCacheItem>;
+  scrollPositions: Map<string, number>;
+  backHistory: string[];
+  forwardHistory: string[];
+};
+
+function createProviderBrowseSession(): ProviderBrowseSession {
+  return {
+    currentPath: "/",
+    entries: [],
+    thumbnailImages: {},
+    directoryCache: new Map(),
+    scrollPositions: new Map(),
+    backHistory: [],
+    forwardHistory: [],
+  };
+}
+
+function normalizeProvider(value: string): CloudProvider {
+  return value === "quark" ? "quark" : "123";
+}
 
 function loadDirectoryCacheSettings(): DirectoryCacheSettings {
   try {
@@ -416,15 +453,19 @@ function breadcrumbs(value: string) {
 
 function LoginView({
   state,
-  onLogin,
+  onLogin123,
+  onLoginQuark,
   initialError,
 }: {
   state: AppState;
-  onLogin: (username: string, password: string) => Promise<void>;
+  onLogin123: (username: string, password: string) => Promise<void>;
+  onLoginQuark: (cookie: string) => Promise<void>;
   initialError?: string;
 }) {
+  const [provider, setProvider] = useState<"123" | "quark">(state.provider === "quark" ? "quark" : "123");
   const [username, setUsername] = useState(state.username ?? "");
   const [password, setPassword] = useState(state.password ?? "");
+  const [quarkCookie, setQuarkCookie] = useState(state.quarkCookie ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(initialError ?? "");
 
@@ -437,7 +478,11 @@ function LoginView({
     setSubmitting(true);
     setError("");
     try {
-      await onLogin(username, password);
+      if (provider === "quark") {
+        await onLoginQuark(quarkCookie);
+      } else {
+        await onLogin123(username, password);
+      }
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -453,14 +498,40 @@ function LoginView({
             <HardDrive className="size-6" />
           </div>
           <div className="space-y-1.5">
-            <CardTitle className="text-2xl">连接 123 云盘</CardTitle>
+            <CardTitle className="text-2xl">
+              {provider === "quark" ? "连接夸克网盘" : "连接 123 云盘"}
+            </CardTitle>
             <CardDescription>
-              使用 123 云盘“第三方挂载”生成的 WebDAV 账号和应用密码登录。
+              {provider === "quark"
+                ? "使用浏览器登录夸克网盘后的 Cookie 登录。"
+                : "使用 123 云盘“第三方挂载”生成的 WebDAV 账号和应用密码登录。"}
             </CardDescription>
           </div>
         </CardHeader>
         <form onSubmit={submit} className="flex flex-col gap-(--card-spacing)">
           <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant={provider === "123" ? "default" : "outline"}
+                onClick={() => {
+                  setProvider("123");
+                  setError("");
+                }}
+              >
+                123 云盘
+              </Button>
+              <Button
+                type="button"
+                variant={provider === "quark" ? "default" : "outline"}
+                onClick={() => {
+                  setProvider("quark");
+                  setError("");
+                }}
+              >
+                夸克网盘
+              </Button>
+            </div>
             {error && (
               <Alert variant="destructive">
                 <CircleAlert className="size-4" />
@@ -468,35 +539,66 @@ function LoginView({
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
-            <div className="grid gap-2">
-              <Label htmlFor="username">账号</Label>
-              <Input
-                id="username"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                placeholder="WebDAV 账号"
-                autoComplete="username"
-                autoFocus
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="password">密码</Label>
-              <Input
-                id="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder="WebDAV 应用密码"
-                type="password"
-                autoComplete="current-password"
-              />
-            </div>
+            {provider === "quark" ? (
+              <div className="grid gap-2">
+                <Label htmlFor="quark-cookie">Cookie</Label>
+                <Textarea
+                  id="quark-cookie"
+                  value={quarkCookie}
+                  onChange={(event) => setQuarkCookie(event.target.value)}
+                  placeholder="粘贴 pan.quark.cn 登录后的完整 Cookie"
+                  className="min-h-36 resize-y font-mono text-xs"
+                  autoFocus
+                  spellCheck={false}
+                />
+                <div className="text-xs text-muted-foreground">
+                  Cookie 会和现有 123 云盘凭据一样保存在本机应用配置中。
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="grid gap-2">
+                  <Label htmlFor="username">账号</Label>
+                  <Input
+                    id="username"
+                    value={username}
+                    onChange={(event) => setUsername(event.target.value)}
+                    placeholder="WebDAV 账号"
+                    autoComplete="username"
+                    autoFocus
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="password">密码</Label>
+                  <Input
+                    id="password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    placeholder="WebDAV 应用密码"
+                    type="password"
+                    autoComplete="current-password"
+                  />
+                </div>
+              </>
+            )}
             <div className="rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-              <div className="font-medium text-foreground">WebDAV 地址</div>
-              <div className="mt-1 break-all font-mono">{state.endpoint}</div>
+              <div className="font-medium text-foreground">
+                {provider === "quark" ? "夸克 API" : "WebDAV 地址"}
+              </div>
+              <div className="mt-1 break-all font-mono">
+                {provider === "quark" ? state.quarkEndpoint : state.endpoint}
+              </div>
             </div>
           </CardContent>
           <CardFooter>
-            <Button className="w-full" type="submit" disabled={submitting || !username || !password}>
+            <Button
+              className="w-full"
+              type="submit"
+              disabled={
+                submitting ||
+                (provider === "quark" ? quarkCookie.trim().length === 0 : !username || !password)
+              }
+            >
               {submitting && <LoaderCircle className="animate-spin" />}
               登录并浏览文件
             </Button>
@@ -504,6 +606,121 @@ function LoginView({
         </form>
       </Card>
     </main>
+  );
+}
+
+function AccountLoginDialog({
+  provider,
+  state,
+  onClose,
+  onLogin123,
+  onLoginQuark,
+}: {
+  provider: "123" | "quark";
+  state: AppState;
+  onClose: () => void;
+  onLogin123: (username: string, password: string) => Promise<void>;
+  onLoginQuark: (cookie: string) => Promise<void>;
+}) {
+  const [username, setUsername] = useState(state.username ?? "");
+  const [password, setPassword] = useState(state.password ?? "");
+  const [quarkCookie, setQuarkCookie] = useState(state.quarkCookie ?? "");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+    try {
+      if (provider === "quark") {
+        await onLoginQuark(quarkCookie);
+      } else {
+        await onLogin123(username, password);
+      }
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{provider === "quark" ? "登录夸克网盘" : "登录 123 云盘"}</DialogTitle>
+          <DialogDescription>
+            {provider === "quark"
+              ? "登录后会和 123 云盘同时保持在线，可从顶部随时切换。"
+              : "登录后会和夸克网盘同时保持在线，可从顶部随时切换。"}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="space-y-4">
+          {error && (
+            <Alert variant="destructive">
+              <CircleAlert className="size-4" />
+              <AlertTitle>登录失败</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+          {provider === "quark" ? (
+            <div className="grid gap-2">
+              <Label htmlFor="account-quark-cookie">Cookie</Label>
+              <Textarea
+                id="account-quark-cookie"
+                value={quarkCookie}
+                onChange={(event) => setQuarkCookie(event.target.value)}
+                placeholder="粘贴 pan.quark.cn 登录后的完整 Cookie"
+                className="min-h-36 resize-y font-mono text-xs"
+                autoFocus
+                spellCheck={false}
+              />
+            </div>
+          ) : (
+            <>
+              <div className="grid gap-2">
+                <Label htmlFor="account-123-username">账号</Label>
+                <Input
+                  id="account-123-username"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  placeholder="WebDAV 账号"
+                  autoFocus
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="account-123-password">密码</Label>
+                <Input
+                  id="account-123-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="WebDAV 应用密码"
+                  type="password"
+                />
+              </div>
+            </>
+          )}
+          <Button
+            className="w-full"
+            type="submit"
+            disabled={
+              submitting ||
+              (provider === "quark" ? quarkCookie.trim().length === 0 : !username || !password)
+            }
+          >
+            {submitting && <LoaderCircle className="animate-spin" />}
+            登录
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -517,22 +734,35 @@ function App() {
   const [thumbnailImages, setThumbnailImages] = useState<Record<string, string>>({});
   const [thumbnailStats, setThumbnailStats] = useState<ThumbnailCacheStats>({ count: 0, totalBytes: 0 });
   const [playbackProgressStats, setPlaybackProgressStats] = useState<PlaybackProgressStats>({ count: 0, totalBytes: 0 });
-  const [directoryCacheStats, setDirectoryCacheStats] = useState<DirectoryCacheStats>({
-    count: 0,
-    totalEntries: 0,
-    totalBytes: 0,
+  const [quarkIDCacheStats, setQuarkIDCacheStats] = useState<QuarkIDCacheStats>({ count: 0 });
+  const [providerBrowseStats, setProviderBrowseStats] = useState<Record<CloudProvider, ProviderBrowseStats>>({
+    "123": {
+      directoryCache: { count: 0, totalEntries: 0, totalBytes: 0 },
+      scrollPositions: 0,
+      backHistory: 0,
+      forwardHistory: 0,
+    },
+    quark: {
+      directoryCache: { count: 0, totalEntries: 0, totalBytes: 0 },
+      scrollPositions: 0,
+      backHistory: 0,
+      forwardHistory: 0,
+    },
   });
-  const [directoryScrollPositionCount, setDirectoryScrollPositionCount] = useState(0);
-  const [cacheCount, setCacheCount] = useState(0);
+  const [webdavCacheCount, setWebDAVCacheCount] = useState(0);
+  const [quarkDownloadCacheCount, setQuarkDownloadCacheCount] = useState(0);
   const [currentPath, setCurrentPath] = useState("/");
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [loginProvider, setLoginProvider] = useState<CloudProvider | null>(null);
   const [activeVideo, setActiveVideo] = useState<ActiveVideo | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [settingsMessage, setSettingsMessage] = useState("");
-  const [ttlInput, setTtlInput] = useState("30");
+  const [webdavCacheTTLInput, setWebDAVCacheTTLInput] = useState("30");
+  const [quarkDownloadCacheTTLInput, setQuarkDownloadCacheTTLInput] = useState("30");
+  const [quarkIDCacheTTLInput, setQuarkIDCacheTTLInput] = useState("30");
   const [directoryCacheTTLInput, setDirectoryCacheTTLInput] = useState(String(directoryCacheSettings.ttlMinutes));
   const [directoryCacheMaxSizeInput, setDirectoryCacheMaxSizeInput] = useState(String(directoryCacheSettings.maxSizeMB));
   const [thumbnailMaxAgeInput, setThumbnailMaxAgeInput] = useState("30");
@@ -545,44 +775,104 @@ function App() {
   const directoryAbortController = useRef<AbortController | null>(null);
   const thumbnailAbortController = useRef<AbortController | null>(null);
   const directoryScrollViewportRef = useRef<HTMLDivElement | null>(null);
-  const directoryScrollPositions = useRef(new Map<string, number>());
+  const providerBrowseSessions = useRef<Record<CloudProvider, ProviderBrowseSession>>({
+    "123": createProviderBrowseSession(),
+    quark: createProviderBrowseSession(),
+  });
+  const activeBrowseProvider = useRef<CloudProvider>("123");
+  const directoryScrollPositions = useRef(providerBrowseSessions.current["123"].scrollPositions);
   const pendingDirectoryScrollRestore = useRef<{ path: string; scrollTop: number } | null>(null);
   const currentPathRef = useRef("/");
-  const directoryBackHistory = useRef<string[]>([]);
-  const directoryForwardHistory = useRef<string[]>([]);
+  const directoryBackHistory = useRef(providerBrowseSessions.current["123"].backHistory);
+  const directoryForwardHistory = useRef(providerBrowseSessions.current["123"].forwardHistory);
   const thumbnailReloadNeeded = useRef(false);
-  const directoryCache = useRef(new Map<string, DirectoryCacheItem>());
+  const directoryCache = useRef(providerBrowseSessions.current["123"].directoryCache);
   const directoryCacheSettingsRef = useRef(directoryCacheSettings);
+
+  const pointBrowseRefsAtProvider = useCallback((provider: CloudProvider) => {
+    const session = providerBrowseSessions.current[provider];
+    activeBrowseProvider.current = provider;
+    directoryCache.current = session.directoryCache;
+    directoryScrollPositions.current = session.scrollPositions;
+    directoryBackHistory.current = session.backHistory;
+    directoryForwardHistory.current = session.forwardHistory;
+    currentPathRef.current = session.currentPath;
+  }, []);
+
+  const refreshProviderBrowseStats = useCallback((settings = directoryCacheSettingsRef.current) => {
+    const statsFor = (provider: CloudProvider): ProviderBrowseStats => {
+      const session = providerBrowseSessions.current[provider];
+      return {
+        directoryCache: pruneDirectoryCache(session.directoryCache, settings),
+        scrollPositions: session.scrollPositions.size,
+        backHistory: session.backHistory.length,
+        forwardHistory: session.forwardHistory.length,
+      };
+    };
+    setProviderBrowseStats({
+      "123": statsFor("123"),
+      quark: statsFor("quark"),
+    });
+  }, []);
+
+  const syncBackendState = useCallback((nextState: AppState) => {
+    setState(nextState);
+    setWebDAVCacheTTLInput(String(nextState.webdavCacheTTLMinutes));
+    setQuarkDownloadCacheTTLInput(String(nextState.quarkDownloadCacheTTLMinutes));
+    setQuarkIDCacheTTLInput(String(nextState.quarkIDCacheTTLMinutes));
+    setThumbnailMaxAgeInput(String(nextState.thumbnailMaxAgeDays));
+    setThumbnailMaxSizeInput(String(nextState.thumbnailMaxSizeMB));
+    setThumbnailOffsetInput(String(nextState.thumbnailOffsetSeconds));
+    setPlaybackMaxAgeInput(String(nextState.playbackMaxAgeDays));
+    setPlaybackMaxSizeInput(String(nextState.playbackMaxSizeMB));
+  }, []);
 
   useEffect(() => {
     AppService.GetState()
       .then(async (nextState) => {
-        setState(nextState);
-        setTtlInput(String(nextState.cacheTTLMinutes));
-        setThumbnailMaxAgeInput(String(nextState.thumbnailMaxAgeDays));
-        setThumbnailMaxSizeInput(String(nextState.thumbnailMaxSizeMB));
-        setThumbnailOffsetInput(String(nextState.thumbnailOffsetSeconds));
-        setPlaybackMaxAgeInput(String(nextState.playbackMaxAgeDays));
-        setPlaybackMaxSizeInput(String(nextState.playbackMaxSizeMB));
+        syncBackendState(nextState);
 
-        if (!nextState.connected && nextState.username && nextState.password) {
+        const preferredProvider = nextState.provider;
+        let restoredState = nextState;
+        const restoreErrors: string[] = [];
+
+        if (!restoredState.connected123 && nextState.username && nextState.password) {
           try {
-            const restoredState = await AppService.Login(nextState.username, nextState.password);
-            setState(restoredState);
-            setTtlInput(String(restoredState.cacheTTLMinutes));
-            setThumbnailMaxAgeInput(String(restoredState.thumbnailMaxAgeDays));
-            setThumbnailMaxSizeInput(String(restoredState.thumbnailMaxSizeMB));
-            setThumbnailOffsetInput(String(restoredState.thumbnailOffsetSeconds));
-            setPlaybackMaxAgeInput(String(restoredState.playbackMaxAgeDays));
-            setPlaybackMaxSizeInput(String(restoredState.playbackMaxSizeMB));
+            restoredState = await AppService.Login(nextState.username, nextState.password);
+            syncBackendState(restoredState);
           } catch (err) {
-            setError(`自动登录失败：${errorMessage(err)}`);
+            restoreErrors.push(`123 云盘自动登录失败：${errorMessage(err)}`);
           }
+        }
+        if (!restoredState.connectedQuark && nextState.quarkCookie) {
+          try {
+            restoredState = await AppService.LoginQuark(nextState.quarkCookie);
+            syncBackendState(restoredState);
+          } catch (err) {
+            restoreErrors.push(`夸克网盘自动登录失败：${errorMessage(err)}`);
+          }
+        }
+
+        const preferredConnected =
+          preferredProvider === "quark" ? restoredState.connectedQuark : restoredState.connected123;
+        if (preferredConnected && restoredState.provider !== preferredProvider) {
+          try {
+            restoredState = await AppService.SwitchProvider(preferredProvider);
+            syncBackendState(restoredState);
+          } catch (err) {
+            restoreErrors.push(`恢复当前网盘失败：${errorMessage(err)}`);
+          }
+        }
+
+        pointBrowseRefsAtProvider(normalizeProvider(restoredState.provider));
+
+        if (restoreErrors.length > 0) {
+          setError(restoreErrors.join("；"));
         }
       })
       .catch((err) => setError(errorMessage(err)))
       .finally(() => setRestoringSession(false));
-  }, []);
+  }, [pointBrowseRefsAtProvider, syncBackendState]);
 
   useEffect(
     () => () => {
@@ -606,14 +896,10 @@ function App() {
   const getCachedDirectory = useCallback((remotePath: string) => {
     const now = Date.now();
     const cache = directoryCache.current;
-    const stats = pruneDirectoryCache(cache, directoryCacheSettingsRef.current, now);
+    pruneDirectoryCache(cache, directoryCacheSettingsRef.current, now);
     const item = cache.get(remotePath);
-    if (!item) {
-      setDirectoryCacheStats(stats);
-      return null;
-    }
+    if (!item) return null;
     item.lastAccess = now;
-    setDirectoryCacheStats(directoryCacheStatsFor(cache));
     return item.entries;
   }, []);
 
@@ -626,14 +912,7 @@ function App() {
       lastAccess: now,
       sizeBytes: estimateDirectoryCacheSize(remotePath, cachedEntries),
     });
-    setDirectoryCacheStats(
-      pruneDirectoryCache(directoryCache.current, directoryCacheSettingsRef.current, now),
-    );
-  }, []);
-
-  const clearDirectoryCacheMemory = useCallback(() => {
-    directoryCache.current.clear();
-    setDirectoryCacheStats({ count: 0, totalEntries: 0, totalBytes: 0 });
+    pruneDirectoryCache(directoryCache.current, directoryCacheSettingsRef.current, now);
   }, []);
 
   const rememberDirectoryScrollPosition = useCallback((remotePath: string, scrollTop: number) => {
@@ -645,7 +924,6 @@ function App() {
       if (oldestPath === undefined) break;
       cache.delete(oldestPath);
     }
-    setDirectoryScrollPositionCount(cache.size);
   }, []);
 
   const getDirectoryScrollPosition = useCallback((remotePath: string) => {
@@ -655,11 +933,6 @@ function App() {
     cache.delete(remotePath);
     cache.set(remotePath, scrollTop);
     return scrollTop;
-  }, []);
-
-  const clearDirectoryScrollPositions = useCallback(() => {
-    directoryScrollPositions.current.clear();
-    setDirectoryScrollPositionCount(0);
   }, []);
 
   const startThumbnailLoading = useCallback((sourceEntries: FileEntry[], requestId: number) => {
@@ -777,12 +1050,6 @@ function App() {
     setCanGoForward(directoryForwardHistory.current.length > 0);
   }, []);
 
-  const resetDirectoryHistory = useCallback(() => {
-    directoryBackHistory.current = [];
-    directoryForwardHistory.current = [];
-    syncDirectoryHistoryState();
-  }, [syncDirectoryHistoryState]);
-
   const navigateDirectory = useCallback((targetPath: string) => {
     const normalized = normalizePath(targetPath);
     const current = currentPathRef.current;
@@ -791,7 +1058,7 @@ function App() {
     const back = directoryBackHistory.current;
     back.push(current);
     if (back.length > DIRECTORY_HISTORY_LIMIT) back.shift();
-    directoryForwardHistory.current = [];
+    directoryForwardHistory.current.length = 0;
     syncDirectoryHistoryState();
     void loadDirectory(normalized);
   }, [loadDirectory, syncDirectoryHistoryState]);
@@ -820,6 +1087,53 @@ function App() {
     void loadDirectory(target);
   }, [loadDirectory, syncDirectoryHistoryState]);
 
+  const saveActiveBrowseSession = useCallback(() => {
+    const viewport = directoryScrollViewportRef.current;
+    if (viewport) {
+      rememberDirectoryScrollPosition(currentPathRef.current, viewport.scrollTop);
+    }
+    const session = providerBrowseSessions.current[activeBrowseProvider.current];
+    session.currentPath = currentPathRef.current;
+    session.entries = entries.slice();
+    session.thumbnailImages = { ...thumbnailImages };
+  }, [entries, rememberDirectoryScrollPosition, thumbnailImages]);
+
+  const resetProviderBrowseSession = useCallback((provider: CloudProvider) => {
+    providerBrowseSessions.current[provider] = createProviderBrowseSession();
+    if (activeBrowseProvider.current === provider) {
+      pointBrowseRefsAtProvider(provider);
+    }
+  }, [pointBrowseRefsAtProvider]);
+
+  const restoreProviderBrowseSession = useCallback((provider: CloudProvider) => {
+    pointBrowseRefsAtProvider(provider);
+    const session = providerBrowseSessions.current[provider];
+    setCurrentPath(session.currentPath);
+    syncDirectoryHistoryState();
+
+    const cached = getCachedDirectory(session.currentPath);
+    if (cached === null) {
+      session.entries = [];
+      session.thumbnailImages = {};
+      setEntries([]);
+      setThumbnailImages({});
+      void loadDirectory(session.currentPath);
+      return;
+    }
+
+    const visibleEntries = cached.filter((entry) => entry.isDirectory || isVideo(entry));
+    session.entries = visibleEntries.slice();
+    setEntries(visibleEntries);
+    setThumbnailImages({ ...session.thumbnailImages });
+    pendingDirectoryScrollRestore.current = {
+      path: session.currentPath,
+      scrollTop: getDirectoryScrollPosition(session.currentPath),
+    };
+    setLoading(false);
+    const requestId = ++directoryRequestId.current;
+    startThumbnailLoading(visibleEntries, requestId);
+  }, [getCachedDirectory, getDirectoryScrollPosition, loadDirectory, pointBrowseRefsAtProvider, startThumbnailLoading, syncDirectoryHistoryState]);
+
   useEffect(() => {
     const handleHistoryMouseButton = (event: MouseEvent) => {
       if (event.button !== 3 && event.button !== 4) return;
@@ -841,16 +1155,21 @@ function App() {
   }, [activeVideo, goBackDirectory, goForwardDirectory, showSettings]);
 
   useEffect(() => {
-    if (state?.connected) {
+    if (!restoringSession && state?.connected) {
       void loadDirectory(currentPath);
     }
-    // Only run when a session becomes connected.
+    // Wait for both saved sessions to restore before the initial directory load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.connected]);
+  }, [restoringSession]);
 
-  const refreshCache = useCallback(async () => {
+  const refreshProviderCaches = useCallback(async () => {
     try {
-      setCacheCount(((await AppService.ListRedirectCache()) ?? []).length);
+      const [webdavEntries, quarkEntries] = await Promise.all([
+        AppService.ListRedirectCache("123"),
+        AppService.ListRedirectCache("quark"),
+      ]);
+      setWebDAVCacheCount((webdavEntries ?? []).length);
+      setQuarkDownloadCacheCount((quarkEntries ?? []).length);
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -872,39 +1191,99 @@ function App() {
     }
   }, []);
 
-  const login = async (username: string, password: string) => {
-    const nextState = await AppService.Login(username, password);
-    clearDirectoryCacheMemory();
-    setState(nextState);
-    setTtlInput(String(nextState.cacheTTLMinutes));
-    setThumbnailMaxAgeInput(String(nextState.thumbnailMaxAgeDays));
-    setThumbnailMaxSizeInput(String(nextState.thumbnailMaxSizeMB));
-    setThumbnailOffsetInput(String(nextState.thumbnailOffsetSeconds));
-    setPlaybackMaxAgeInput(String(nextState.playbackMaxAgeDays));
-    setPlaybackMaxSizeInput(String(nextState.playbackMaxSizeMB));
-    currentPathRef.current = "/";
-    clearDirectoryScrollPositions();
-    resetDirectoryHistory();
-    setCurrentPath("/");
+  const refreshQuarkIDCacheStats = useCallback(async () => {
+    try {
+      setQuarkIDCacheStats(await AppService.GetQuarkIDCacheStats());
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }, []);
+
+  const completeLogin = (nextState: AppState, provider: CloudProvider) => {
+    directoryRequest.current?.cancel("provider login");
+    directoryAbortController.current?.abort();
+    thumbnailAbortController.current?.abort();
+    resetProviderBrowseSession(provider);
+    syncBackendState(nextState);
+    setQuarkIDCacheStats({ count: 0 });
     setShowSettings(false);
+    setLoginProvider(null);
+    setSettingsMessage("");
+    setError("");
+    restoreProviderBrowseSession(provider);
+    void refreshProviderCaches();
+    if (provider === "quark") void refreshQuarkIDCacheStats();
+  };
+
+  const login123 = async (username: string, password: string) => {
+    saveActiveBrowseSession();
+    completeLogin(await AppService.Login(username, password), "123");
+  };
+
+  const loginQuark = async (cookie: string) => {
+    saveActiveBrowseSession();
+    completeLogin(await AppService.LoginQuark(cookie), "quark");
+  };
+
+  const switchProvider = async (provider: CloudProvider) => {
+    if (!state || state.provider === provider) return;
+    const connected = provider === "quark" ? state.connectedQuark : state.connected123;
+    if (!connected) {
+      setLoginProvider(provider);
+      return;
+    }
+
+    saveActiveBrowseSession();
+    directoryRequest.current?.cancel("provider switched");
+    directoryAbortController.current?.abort();
+    thumbnailAbortController.current?.abort();
+    const nextState = await AppService.SwitchProvider(provider);
+    syncBackendState(nextState);
+    restoreProviderBrowseSession(provider);
+    setShowSettings(false);
+    setSettingsMessage("");
+    setError("");
+    void refreshProviderCaches();
+    if (provider === "quark") {
+      void refreshQuarkIDCacheStats();
+    } else {
+      setQuarkIDCacheStats({ count: 0 });
+    }
   };
 
   const logout = async () => {
+    const loggedOutProvider = state ? normalizeProvider(state.provider) : activeBrowseProvider.current;
+    directoryRequest.current?.cancel("provider logout");
     directoryAbortController.current?.abort();
     thumbnailAbortController.current?.abort();
     const nextState = await AppService.Logout();
-    setState(nextState);
-    setEntries([]);
-    currentPathRef.current = "/";
-    clearDirectoryScrollPositions();
-    resetDirectoryHistory();
-    setThumbnailImages({});
-    setThumbnailStats({ count: 0, totalBytes: 0 });
-    setPlaybackProgressStats({ count: 0, totalBytes: 0 });
-    clearDirectoryCacheMemory();
-    setCacheCount(0);
+    resetProviderBrowseSession(loggedOutProvider);
+    syncBackendState(nextState);
     setActiveVideo(null);
     setError("");
+    setSettingsMessage("");
+
+    if (nextState.connected) {
+      const nextProvider = normalizeProvider(nextState.provider);
+      restoreProviderBrowseSession(nextProvider);
+      void refreshProviderCaches();
+      if (nextProvider === "quark") {
+        void refreshQuarkIDCacheStats();
+      } else {
+        setQuarkIDCacheStats({ count: 0 });
+      }
+      return;
+    }
+
+    pointBrowseRefsAtProvider(loggedOutProvider);
+    setEntries([]);
+    setThumbnailImages({});
+    setCurrentPath("/");
+    syncDirectoryHistoryState();
+    refreshProviderBrowseStats();
+    setWebDAVCacheCount(0);
+    setQuarkDownloadCacheCount(0);
+    setQuarkIDCacheStats({ count: 0 });
   };
 
   const openEntry = async (entry: FileEntry) => {
@@ -925,7 +1304,7 @@ function App() {
         url,
         resumePosition: progress?.found ? progress.position : 0,
       });
-      window.setTimeout(() => void refreshCache(), 600);
+      window.setTimeout(() => void refreshProviderCaches(), 600);
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -944,30 +1323,79 @@ function App() {
     });
   }, []);
 
-  const saveTTL = async () => {
-    const minutes = Number.parseInt(ttlInput, 10);
+  const saveWebDAVCacheTTL = async () => {
+    const minutes = Number.parseInt(webdavCacheTTLInput, 10);
     setSettingsMessage("");
     setError("");
     if (!Number.isFinite(minutes)) {
-      setError("请输入有效的缓存分钟数");
+      setError("请输入有效的 123 URL 缓存分钟数");
       return;
     }
     try {
-      const nextState = await AppService.SetCacheTTL(minutes);
-      setState(nextState);
-      setTtlInput(String(nextState.cacheTTLMinutes));
-      setSettingsMessage("缓存时间已保存，并立即应用到现有缓存。 ");
-      await refreshCache();
+      const nextState = await AppService.SetWebDAVCacheTTL(minutes);
+      syncBackendState(nextState);
+      setSettingsMessage("123 URL 缓存时间已保存，并立即应用。 ");
+      await refreshProviderCaches();
     } catch (err) {
       setError(errorMessage(err));
     }
   };
 
-  const clearCache = async () => {
+  const saveQuarkDownloadCacheTTL = async () => {
+    const minutes = Number.parseInt(quarkDownloadCacheTTLInput, 10);
+    setSettingsMessage("");
+    setError("");
+    if (!Number.isFinite(minutes)) {
+      setError("请输入有效的夸克下载 URL 缓存分钟数");
+      return;
+    }
     try {
-      await AppService.ClearRedirectCache();
-      setCacheCount(0);
-      setSettingsMessage("URL 缓存已清空。 ");
+      const nextState = await AppService.SetQuarkDownloadCacheTTL(minutes);
+      syncBackendState(nextState);
+      setSettingsMessage("夸克下载 URL 缓存时间已保存，并立即应用。 ");
+      await refreshProviderCaches();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
+  const clearProviderCache = async (provider: CloudProvider) => {
+    try {
+      await AppService.ClearRedirectCache(provider);
+      if (provider === "quark") {
+        setQuarkDownloadCacheCount(0);
+        setSettingsMessage("夸克下载 URL 缓存已清空。 ");
+      } else {
+        setWebDAVCacheCount(0);
+        setSettingsMessage("123 URL 缓存已清空。 ");
+      }
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
+  const saveQuarkIDCacheTTL = async () => {
+    const minutes = Number.parseInt(quarkIDCacheTTLInput, 10);
+    setSettingsMessage("");
+    setError("");
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+      setError("路径 ID 缓存时间必须在 1 到 1440 分钟之间");
+      return;
+    }
+    try {
+      const nextState = await AppService.SetQuarkIDCacheTTL(minutes);
+      syncBackendState(nextState);
+      setSettingsMessage("路径 ID 缓存时间已保存，并立即应用到现有缓存。 ");
+      await refreshQuarkIDCacheStats();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
+  const clearQuarkIDCache = async () => {
+    try {
+      setQuarkIDCacheStats(await AppService.ClearQuarkIDCache());
+      setSettingsMessage("路径 ID 缓存已清空。 ");
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -1004,13 +1432,14 @@ function App() {
     } catch {
       // The active in-memory settings still apply even when persistence is unavailable.
     }
-    setDirectoryCacheStats(pruneDirectoryCache(directoryCache.current, nextSettings));
+    refreshProviderBrowseStats(nextSettings);
     setSettingsMessage("文件列表缓存设置已保存。 ");
   };
 
-  const clearDirectoryCache = () => {
-    clearDirectoryCacheMemory();
-    setSettingsMessage("文件列表缓存已清空。 ");
+  const clearDirectoryCache = (provider: CloudProvider) => {
+    providerBrowseSessions.current[provider].directoryCache.clear();
+    refreshProviderBrowseStats();
+    setSettingsMessage(`${provider === "quark" ? "夸克" : "123"} 文件列表缓存已清空。 `);
   };
 
   const saveThumbnailSettings = async () => {
@@ -1109,13 +1538,25 @@ function App() {
   }
 
   if (!state.connected) {
-    return <LoginView state={state} onLogin={login} initialError={error} />;
+    return (
+      <LoginView
+        state={state}
+        onLogin123={login123}
+        onLoginQuark={loginQuark}
+        initialError={error}
+      />
+    );
   }
 
   const directoryCacheSettingsChanged =
     Number.parseInt(directoryCacheTTLInput, 10) !== directoryCacheSettings.ttlMinutes ||
     Number.parseInt(directoryCacheMaxSizeInput, 10) !== directoryCacheSettings.maxSizeMB;
-  const urlCacheSettingsChanged = Number.parseInt(ttlInput, 10) !== state.cacheTTLMinutes;
+  const webdavCacheSettingsChanged =
+    Number.parseInt(webdavCacheTTLInput, 10) !== state.webdavCacheTTLMinutes;
+  const quarkDownloadCacheSettingsChanged =
+    Number.parseInt(quarkDownloadCacheTTLInput, 10) !== state.quarkDownloadCacheTTLMinutes;
+  const quarkIDCacheSettingsChanged =
+    Number.parseInt(quarkIDCacheTTLInput, 10) !== state.quarkIDCacheTTLMinutes;
   const thumbnailSettingsChanged =
     Number.parseInt(thumbnailMaxAgeInput, 10) !== state.thumbnailMaxAgeDays ||
     Number.parseInt(thumbnailMaxSizeInput, 10) !== state.thumbnailMaxSizeMB ||
@@ -1133,10 +1574,26 @@ function App() {
           </div>
           <div className="min-w-0">
             <div className="truncate font-semibold">Drive Player</div>
-            <div className="truncate text-xs text-muted-foreground">123 云盘 · {state.username}</div>
+            <div className="truncate text-xs text-muted-foreground">
+              {state.provider === "quark" ? "夸克网盘 · Cookie 登录" : `123 云盘 · ${state.username}`}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant={state.provider === "123" ? "secondary" : "outline"}
+            size="sm"
+            onClick={() => void switchProvider("123")}
+          >
+            {state.connected123 ? "123 云盘" : "登录 123"}
+          </Button>
+          <Button
+            variant={state.provider === "quark" ? "secondary" : "outline"}
+            size="sm"
+            onClick={() => void switchProvider("quark")}
+          >
+            {state.connectedQuark ? "夸克网盘" : "登录夸克"}
+          </Button>
           <Button
             variant={showSettings ? "secondary" : "outline"}
             size="sm"
@@ -1151,12 +1608,11 @@ function App() {
               }
               setShowSettings(true);
               setSettingsMessage("");
-              void refreshCache();
-              setDirectoryCacheStats(
-                pruneDirectoryCache(directoryCache.current, directoryCacheSettingsRef.current),
-              );
+              void refreshProviderCaches();
+              refreshProviderBrowseStats();
               void refreshThumbnailStats();
               void refreshPlaybackProgressStats();
+              void refreshQuarkIDCacheStats();
             }}
           >
             <Settings />
@@ -1164,7 +1620,7 @@ function App() {
           </Button>
           <Button variant="outline" size="sm" onClick={() => void logout()}>
             <LogOut />
-            退出
+            退出当前
           </Button>
         </div>
       </header>
@@ -1341,15 +1797,15 @@ function App() {
               )}
               <Card>
                 <CardHeader>
-                  <CardTitle>文件列表缓存</CardTitle>
+                  <CardTitle>浏览缓存规则</CardTitle>
                   <CardDescription>
-                    缓存在当前前端窗口内存中，命中时同步恢复目录列表，不经过 Wails 或 WebDAV。默认保留 30 分钟、上限 32 MB；过期自动失效，超过上限按最近最少使用淘汰，手动刷新会绕过缓存。
+                    123 和夸克各自独立保存文件列表、滚动位置和前进 / 后退历史；以下限制同时应用于两个网盘。
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div className="grid gap-2">
-                      <Label htmlFor="directory-cache-ttl">缓存时间（分钟）</Label>
+                      <Label htmlFor="directory-cache-ttl">文件列表缓存时间（分钟）</Label>
                       <Input
                         id="directory-cache-ttl"
                         type="number"
@@ -1360,7 +1816,7 @@ function App() {
                       />
                     </div>
                     <div className="grid gap-2">
-                      <Label htmlFor="directory-cache-max-size">总大小上限（MB）</Label>
+                      <Label htmlFor="directory-cache-max-size">每个网盘大小上限（MB）</Label>
                       <Input
                         id="directory-cache-max-size"
                         type="number"
@@ -1378,35 +1834,12 @@ function App() {
                     保存
                   </Button>
                   <Separator />
-                  <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div className="flex flex-wrap items-center gap-2 text-sm">
-                      <span className="text-muted-foreground">估算内存占用</span>
-                      <Badge variant="outline">
-                        {directoryCacheStats.totalBytes === 0 ? "0 B" : formatSize(directoryCacheStats.totalBytes)} / {directoryCacheSettings.maxSizeMB} MB
-                      </Badge>
-                      <Badge variant="outline">{directoryCacheStats.count} 个目录</Badge>
-                      <Badge variant="outline">{directoryCacheStats.totalEntries} 个条目</Badge>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void clearDirectoryCache()}
-                      disabled={directoryCacheStats.count === 0}
-                    >
-                      <Trash2 />
-                      清空列表缓存
-                    </Button>
-                  </div>
-                  <Separator />
-                  <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-                    <div>
-                      <div className="font-medium">滚动位置缓存</div>
-                      <div className="text-muted-foreground">
-                        固定上限 {DIRECTORY_SCROLL_POSITION_CACHE_LIMIT} 个目录，超过后按最近最少使用淘汰。
-                      </div>
-                    </div>
+                  <div className="flex flex-wrap gap-2 text-sm">
                     <Badge variant="outline">
-                      {directoryScrollPositionCount} / {DIRECTORY_SCROLL_POSITION_CACHE_LIMIT} 个目录
+                      滚动位置：每个网盘最多 {DIRECTORY_SCROLL_POSITION_CACHE_LIMIT} 个目录
+                    </Badge>
+                    <Badge variant="outline">
+                      后退 / 前进：每个方向每个网盘最多 {DIRECTORY_HISTORY_LIMIT} 条
                     </Badge>
                   </div>
                 </CardContent>
@@ -1414,38 +1847,237 @@ function App() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>URL 缓存</CardTitle>
-                  <CardDescription>
-                    设置 GET 请求 302 Location 的缓存时间。默认 30 分钟，范围 1–1440 分钟。
-                  </CardDescription>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1.5">
+                      <CardTitle>123 云盘</CardTitle>
+                      <CardDescription>123 的浏览状态、WebDAV 连接与 GET 302 Location 缓存。</CardDescription>
+                    </div>
+                    <Badge variant={state.connected123 ? "secondary" : "outline"}>
+                      {state.connected123 ? "已登录" : "未登录"}
+                    </Badge>
+                  </div>
                 </CardHeader>
-                <CardContent className="space-y-4">
+                <CardContent className="space-y-5">
+                  <div className="space-y-3">
+                    <div className="font-medium">浏览状态</div>
+                    <div className="grid gap-3 text-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-muted-foreground">文件列表</span>
+                          <Badge variant="outline">
+                            {providerBrowseStats["123"].directoryCache.totalBytes === 0
+                              ? "0 B"
+                              : formatSize(providerBrowseStats["123"].directoryCache.totalBytes)} / {directoryCacheSettings.maxSizeMB} MB
+                          </Badge>
+                          <Badge variant="outline">{providerBrowseStats["123"].directoryCache.count} 个目录</Badge>
+                          <Badge variant="outline">{providerBrowseStats["123"].directoryCache.totalEntries} 个条目</Badge>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => clearDirectoryCache("123")}
+                          disabled={providerBrowseStats["123"].directoryCache.count === 0}
+                        >
+                          <Trash2 />
+                          清空列表缓存
+                        </Button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant="outline">
+                          滚动位置 {providerBrowseStats["123"].scrollPositions} / {DIRECTORY_SCROLL_POSITION_CACHE_LIMIT}
+                        </Badge>
+                        <Badge variant="outline">
+                          后退 {providerBrowseStats["123"].backHistory} / {DIRECTORY_HISTORY_LIMIT}
+                        </Badge>
+                        <Badge variant="outline">
+                          前进 {providerBrowseStats["123"].forwardHistory} / {DIRECTORY_HISTORY_LIMIT}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+                  <Separator />
+                  <div className="grid gap-4 text-sm sm:grid-cols-2">
+                    <div className="grid gap-1">
+                      <span className="text-muted-foreground">WebDAV</span>
+                      <code className="break-all rounded bg-muted px-2 py-1">{state.endpoint}</code>
+                    </div>
+                    <div className="grid gap-1">
+                      <span className="text-muted-foreground">本地代理</span>
+                      <code className="break-all rounded bg-muted px-2 py-1">{state.webdavProxyBaseUrl}</code>
+                    </div>
+                  </div>
                   <div className="grid max-w-sm gap-2">
-                    <Label htmlFor="cache-ttl">缓存时间（分钟）</Label>
+                    <Label htmlFor="webdav-cache-ttl">URL 缓存时间（分钟）</Label>
                     <Input
-                      id="cache-ttl"
+                      id="webdav-cache-ttl"
                       type="number"
                       min={1}
                       max={1440}
-                      value={ttlInput}
-                      onChange={(event) => setTtlInput(event.target.value)}
+                      value={webdavCacheTTLInput}
+                      onChange={(event) => setWebDAVCacheTTLInput(event.target.value)}
                     />
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button onClick={() => void saveTTL()} disabled={!urlCacheSettingsChanged}>
-                      保存
-                    </Button>
-                  </div>
+                  <Button onClick={() => void saveWebDAVCacheTTL()} disabled={!webdavCacheSettingsChanged}>
+                    保存
+                  </Button>
                   <Separator />
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="text-muted-foreground">当前缓存</span>
-                      <Badge variant="outline">{cacheCount} 条</Badge>
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <span className="text-muted-foreground">302 URL 缓存</span>
+                      <Badge variant="outline">{webdavCacheCount} 条</Badge>
                     </div>
-                    <Button variant="outline" size="sm" onClick={() => void clearCache()} disabled={cacheCount === 0}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void clearProviderCache("123")}
+                      disabled={webdavCacheCount === 0}
+                    >
                       <Trash2 />
                       清空缓存
                     </Button>
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    GET：缓存并复用 302 Location；其他 WebDAV 方法直接透传。
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1.5">
+                      <CardTitle>夸克网盘</CardTitle>
+                      <CardDescription>夸克的浏览状态、下载 URL / Cookie、文件大小以及路径 FID 缓存。</CardDescription>
+                    </div>
+                    <Badge variant={state.connectedQuark ? "secondary" : "outline"}>
+                      {state.connectedQuark ? "已登录" : "未登录"}
+                    </Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <div className="space-y-3">
+                    <div className="font-medium">浏览状态</div>
+                    <div className="grid gap-3 text-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-muted-foreground">文件列表</span>
+                          <Badge variant="outline">
+                            {providerBrowseStats.quark.directoryCache.totalBytes === 0
+                              ? "0 B"
+                              : formatSize(providerBrowseStats.quark.directoryCache.totalBytes)} / {directoryCacheSettings.maxSizeMB} MB
+                          </Badge>
+                          <Badge variant="outline">{providerBrowseStats.quark.directoryCache.count} 个目录</Badge>
+                          <Badge variant="outline">{providerBrowseStats.quark.directoryCache.totalEntries} 个条目</Badge>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => clearDirectoryCache("quark")}
+                          disabled={providerBrowseStats.quark.directoryCache.count === 0}
+                        >
+                          <Trash2 />
+                          清空列表缓存
+                        </Button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant="outline">
+                          滚动位置 {providerBrowseStats.quark.scrollPositions} / {DIRECTORY_SCROLL_POSITION_CACHE_LIMIT}
+                        </Badge>
+                        <Badge variant="outline">
+                          后退 {providerBrowseStats.quark.backHistory} / {DIRECTORY_HISTORY_LIMIT}
+                        </Badge>
+                        <Badge variant="outline">
+                          前进 {providerBrowseStats.quark.forwardHistory} / {DIRECTORY_HISTORY_LIMIT}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+                  <Separator />
+                  <div className="grid gap-4 text-sm sm:grid-cols-2">
+                    <div className="grid gap-1">
+                      <span className="text-muted-foreground">夸克 API</span>
+                      <code className="break-all rounded bg-muted px-2 py-1">{state.quarkEndpoint}</code>
+                    </div>
+                    <div className="grid gap-1">
+                      <span className="text-muted-foreground">本地代理</span>
+                      <code className="break-all rounded bg-muted px-2 py-1">{state.quarkProxyBaseUrl}</code>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div>
+                      <div className="font-medium">下载 URL 缓存</div>
+                      <div className="text-sm text-muted-foreground">
+                        缓存路径对应的临时下载 URL、本次下载 Cookie 和文件大小；失效后自动重新获取。
+                      </div>
+                    </div>
+                    <div className="grid max-w-sm gap-2">
+                      <Label htmlFor="quark-download-cache-ttl">缓存时间（分钟）</Label>
+                      <Input
+                        id="quark-download-cache-ttl"
+                        type="number"
+                        min={1}
+                        max={1440}
+                        value={quarkDownloadCacheTTLInput}
+                        onChange={(event) => setQuarkDownloadCacheTTLInput(event.target.value)}
+                      />
+                    </div>
+                    <Button onClick={() => void saveQuarkDownloadCacheTTL()} disabled={!quarkDownloadCacheSettingsChanged}>
+                      保存
+                    </Button>
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <Badge variant="outline">{quarkDownloadCacheCount} 条</Badge>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void clearProviderCache("quark")}
+                        disabled={quarkDownloadCacheCount === 0}
+                      >
+                        <Trash2 />
+                        清空下载 URL 缓存
+                      </Button>
+                    </div>
+                  </div>
+
+                  <Separator />
+
+                  <div className="space-y-3">
+                    <div>
+                      <div className="font-medium">路径 ID 缓存</div>
+                      <div className="text-sm text-muted-foreground">
+                        后端内存缓存路径到 FID 的映射，避免每次访问都从根目录逐级解析。
+                      </div>
+                    </div>
+                    <div className="grid max-w-sm gap-2">
+                      <Label htmlFor="quark-id-cache-ttl">缓存时间（分钟）</Label>
+                      <Input
+                        id="quark-id-cache-ttl"
+                        type="number"
+                        min={1}
+                        max={1440}
+                        value={quarkIDCacheTTLInput}
+                        onChange={(event) => setQuarkIDCacheTTLInput(event.target.value)}
+                      />
+                    </div>
+                    <Button onClick={() => void saveQuarkIDCacheTTL()} disabled={!quarkIDCacheSettingsChanged}>
+                      保存
+                    </Button>
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <Badge variant="outline">{quarkIDCacheStats.count} 条</Badge>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void clearQuarkIDCache()}
+                        disabled={quarkIDCacheStats.count === 0}
+                      >
+                        <Trash2 />
+                        清空路径 ID 缓存
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="text-sm text-muted-foreground">
+                    GET：请求长度 ≤300 MiB 时单次访问上游；更大时拆成多个 ≤300 MiB Range 顺序拼流。
                   </div>
                 </CardContent>
               </Card>
@@ -1614,32 +2246,20 @@ function App() {
                 </CardContent>
               </Card>
 
-              <Card>
-                <CardHeader>
-                  <CardTitle>WebDAV 代理</CardTitle>
-                  <CardDescription>
-                    本地代理仅监听 127.0.0.1，本机访问无需账号、密码或 token；代理内部自动使用已保存的 123 云盘 WebDAV 凭据访问上游。
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="grid gap-4 text-sm">
-                  <div className="grid gap-1">
-                    <span className="text-muted-foreground">123 云盘 WebDAV</span>
-                    <code className="break-all rounded bg-muted px-2 py-1">{state.endpoint}</code>
-                  </div>
-                  <div className="grid gap-1">
-                    <span className="text-muted-foreground">本地代理</span>
-                    <code className="break-all rounded bg-muted px-2 py-1">{state.proxyBaseUrl}</code>
-                  </div>
-                  <div className="grid gap-1">
-                    <span className="text-muted-foreground">转发策略</span>
-                    <span>GET：缓存并复用 302 Location；其他 WebDAV 方法：直接透传。</span>
-                  </div>
-                </CardContent>
-              </Card>
             </div>
           </div>
         )}
       </main>
+
+      {loginProvider && (
+        <AccountLoginDialog
+          provider={loginProvider}
+          state={state}
+          onClose={() => setLoginProvider(null)}
+          onLogin123={login123}
+          onLoginQuark={loginQuark}
+        />
+      )}
 
       <Dialog
         open={Boolean(activeVideo)}

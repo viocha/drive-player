@@ -3,10 +3,17 @@
 
 export interface AppState {
     "connected": boolean;
+    "connected123": boolean;
+    "connectedQuark": boolean;
+    "provider": string;
     "username": string;
     "password": string;
+    "quarkCookie": string;
     "endpoint": string;
-    "cacheTTLMinutes": number;
+    "quarkEndpoint": string;
+    "webdavCacheTTLMinutes": number;
+    "quarkDownloadCacheTTLMinutes": number;
+    "quarkIDCacheTTLMinutes": number;
     "thumbnailMaxAgeDays": number;
     "thumbnailMaxSizeMB": number;
     "thumbnailOffsetSeconds": number;
@@ -17,6 +24,8 @@ export interface AppState {
     "thumbnailDirectory": string;
     "playbackProgressPath": string;
     "proxyBaseUrl": string;
+    "webdavProxyBaseUrl": string;
+    "quarkProxyBaseUrl": string;
 }
 
 export interface FileEntry {
@@ -38,6 +47,10 @@ export interface PlaybackProgressResult {
 export interface PlaybackProgressStats {
     "count": number;
     "totalBytes": number;
+}
+
+export interface QuarkIDCacheStats {
+    "count": number;
 }
 
 export interface RedirectCacheEntry {
