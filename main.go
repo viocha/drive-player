@@ -41,7 +41,6 @@ func main() {
 			ApplicationShouldTerminateAfterLastWindowClosed: true,
 		},
 	})
-
 	mainWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:     "Drive Player",
 		Width:     1280,
@@ -56,6 +55,8 @@ func main() {
 		BackgroundColour: application.NewRGB(248, 250, 252),
 		URL:              "/",
 	})
+	unregisterBatteryEvents := registerPlatformBatteryEvents(app, mainWindow)
+	defer unregisterBatteryEvents()
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)

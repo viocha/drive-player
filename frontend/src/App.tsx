@@ -333,6 +333,20 @@ function VideoPlayer({
     return (window as Window & { wails?: AndroidPlayerBridge }).wails ?? null;
   }, [isAndroid]);
 
+  useLayoutEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    // `autoPlay` alone lets the browser defer the actual play request until it
+    // decides the media is ready enough. Issue the play request as soon as the
+    // element is mounted so Video.js enters its playing state immediately while
+    // buffering/decoding can continue in the background.
+    void video.play().catch(() => {
+      // Keep the native autoplay attribute as the fallback if the runtime
+      // temporarily rejects an explicit request (for example autoplay policy).
+    });
+  }, [src]);
+
   const setAndroidFullscreen = useCallback((fullscreen: boolean) => {
     if (!isAndroid) return;
     const video = videoRef.current;
@@ -404,9 +418,7 @@ function VideoPlayer({
 
     let cancelled = false;
     let androidBatteryCleanup: (() => void) | null = null;
-    let windowsPowerStatusCleanup: (() => void) | null = null;
-    let windowsPowerSettingCleanup: (() => void) | null = null;
-    let windowsResumeCleanup: (() => void) | null = null;
+    let desktopBatteryCleanup: (() => void) | null = null;
 
     const setBatteryPercent = (percent: number) => {
       setHUDBatteryPercent(
@@ -464,13 +476,7 @@ function VideoPlayer({
       subscribeAndroidPower();
     } else {
       void syncDesktopPower();
-      windowsPowerStatusCleanup = Events.On(Events.Types.Windows.APMPowerStatusChange, () => {
-        void syncDesktopPower();
-      });
-      windowsPowerSettingCleanup = Events.On(Events.Types.Windows.APMPowerSettingChange, () => {
-        void syncDesktopPower();
-      });
-      windowsResumeCleanup = Events.On(Events.Types.Windows.APMResumeAutomatic, () => {
+      desktopBatteryCleanup = Events.On("player:BatteryChanged", () => {
         void syncDesktopPower();
       });
     }
@@ -487,9 +493,7 @@ function VideoPlayer({
     return () => {
       cancelled = true;
       androidBatteryCleanup?.();
-      windowsPowerStatusCleanup?.();
-      windowsPowerSettingCleanup?.();
-      windowsResumeCleanup?.();
+      desktopBatteryCleanup?.();
       window.clearTimeout(clockTimeout);
     };
   }, [androidBridge, fullscreenHUDVisible, isAndroid]);
@@ -2917,6 +2921,7 @@ function App() {
                     <Switch
                       id="fullscreen-hud-enabled"
                       checked={fullscreenHUDEnabledInput}
+                      className="data-disabled:cursor-default"
                       disabled={fullscreenHUDToggleSaving}
                       onCheckedChange={(checked) => void setFullscreenHUDEnabled(checked)}
                     />

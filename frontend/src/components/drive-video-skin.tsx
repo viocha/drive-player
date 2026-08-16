@@ -19,8 +19,6 @@ import {
   AirPlayExitIcon,
   CaptionsOffIcon,
   CaptionsOnIcon,
-  CastEnterIcon,
-  CastExitIcon,
   CheckIcon,
   ChevronIcon,
   FullscreenEnterIcon,
@@ -45,7 +43,6 @@ import {
   BufferingIndicator,
   CaptionsButton,
   useCaptionsOptions,
-  CastButton,
   Container,
   Controls,
   ErrorDialog,
@@ -54,7 +51,6 @@ import {
   Hotkey,
   Menu,
   MuteButton,
-  PiPButton,
   PlayButton,
   usePlaybackRateOptions,
   Popover,
@@ -321,25 +317,6 @@ const Button = forwardRef<HTMLButtonElement, ComponentProps<"button">>(function 
   );
 });
 
-function CastControl() {
-  return (
-    <Tooltip.Root side="top">
-      <Tooltip.Trigger
-        render={
-          <CastButton className="media-button--cast" render={<Button />}>
-            <CastEnterIcon className="media-icon media-icon--cast-enter" />
-            <CastExitIcon className="media-icon media-icon--cast-exit" />
-          </CastButton>
-        }
-      />
-      <Tooltip.Popup className="media-surface media-tooltip">
-        <Tooltip.Label />
-        <Tooltip.Shortcut className="media-tooltip__kbd" />
-      </Tooltip.Popup>
-    </Tooltip.Root>
-  );
-}
-
 function AirPlayControl() {
   return (
     <Tooltip.Root side="top">
@@ -349,25 +326,6 @@ function AirPlayControl() {
             <AirPlayEnterIcon className="media-icon media-icon--airplay-enter" />
             <AirPlayExitIcon className="media-icon media-icon--airplay-exit" />
           </AirPlayButton>
-        }
-      />
-      <Tooltip.Popup className="media-surface media-tooltip">
-        <Tooltip.Label />
-        <Tooltip.Shortcut className="media-tooltip__kbd" />
-      </Tooltip.Popup>
-    </Tooltip.Root>
-  );
-}
-
-function PiPControl() {
-  return (
-    <Tooltip.Root side="top">
-      <Tooltip.Trigger
-        render={
-          <PiPButton className="media-button--pip" render={<Button />}>
-            <PipEnterIcon className="media-icon media-icon--pip-enter" />
-            <PipExitIcon className="media-icon media-icon--pip-exit" />
-          </PiPButton>
         }
       />
       <Tooltip.Popup className="media-surface media-tooltip">
@@ -584,9 +542,7 @@ export function DriveVideoSkin({
           {!nativeFullscreen ? (
             <div className="media-surface media-controls media-controls--secondary">
               <div className="media-button-group">
-                <CastControl />
                 <AirPlayControl />
-                <PiPControl />
                 <FullscreenControl />
               </div>
             </div>
@@ -617,8 +573,11 @@ export function DriveVideoSkin({
       <Gesture type="tap" action="togglePaused" pointer="mouse" region="center" />
       <Gesture type="tap" action="toggleControls" pointer="touch" />
       <Gesture type="doubletap" action="seekStep" value={-SEEK_TIME} region="left" />
-      {/* Application policy: center double-tap toggles playback, not fullscreen. */}
-      <Gesture type="doubletap" action="togglePaused" region="center" />
+      <Gesture
+        type="doubletap"
+        action={nativeFullscreen ? "togglePaused" : "toggleFullscreen"}
+        region="center"
+      />
       <Gesture type="doubletap" action="seekStep" value={SEEK_TIME} region="right" />
 
       <StatusAnnouncer className="media-sr-only" />
