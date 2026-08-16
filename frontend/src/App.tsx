@@ -13,11 +13,10 @@ import {
   LogOut,
   Play,
   RefreshCw,
-  RotateCcw,
   Settings,
   Trash2,
 } from "lucide-react";
-import { System } from "@wailsio/runtime";
+import { Events, System } from "@wailsio/runtime";
 import { AppService } from "../bindings/drive-player";
 import type {
   AppState,
@@ -41,6 +40,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   Breadcrumb,
   BreadcrumbItem,
+  BreadcrumbLink,
   BreadcrumbList,
   BreadcrumbPage,
   BreadcrumbSeparator,
@@ -65,6 +65,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
@@ -75,6 +76,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { Toaster, toast } from "@/components/ui/toast";
 import { DriveVideoSkin } from "@/components/drive-video-skin";
 
 const Player = createPlayer({ features: videoFeatures });
@@ -252,16 +254,39 @@ function pruneDirectoryCache(
   return stats;
 }
 
+function formatPlayerTime(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "--:--";
+  const totalSeconds = Math.floor(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const secs = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+    : `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+function formatHUDClock(timestamp: number) {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 function VideoPlayer({
   src,
   initialPosition,
   onPersistProgress,
   isAndroid,
+  fullscreenHUDEnabled,
+  fullscreenHUDSideOffsetPX,
 }: {
   src: string;
   initialPosition: number;
   onPersistProgress: (position: number, duration: number) => void;
   isAndroid: boolean;
+  fullscreenHUDEnabled: boolean;
+  fullscreenHUDSideOffsetPX: number;
 }) {
   type GestureMode = "pending" | "seek" | "brightness";
   type AndroidPlayerBridge = {
@@ -269,6 +294,7 @@ function VideoPlayer({
     playerGetBrightness?: () => string;
     playerSetBrightness?: (percent: number) => void;
     playerGetSystemBarInsets?: () => string;
+    playerGetPower?: () => string;
     playerSetFullscreen?: (fullscreen: boolean, portrait: boolean) => void;
   };
 
@@ -281,6 +307,14 @@ function VideoPlayer({
   const endedRef = useRef(false);
   const [nativeFullscreen, setNativeFullscreen] = useState(false);
   const nativeFullscreenRef = useRef(false);
+  const [webFullscreen, setWebFullscreen] = useState(false);
+  const [hudClock, setHUDClock] = useState(() => Date.now());
+  const [hudBatteryPercent, setHUDBatteryPercent] = useState<number | null>(null);
+  const [hudProgress, setHUDProgress] = useState({ position: initialPosition, duration: 0 });
+  const hudSliderDraggingRef = useRef(false);
+  const hudGestureDraggingRef = useRef(false);
+  const hudSeekPendingRef = useRef(false);
+  const fullscreenHUDVisible = fullscreenHUDEnabled && (nativeFullscreen || webFullscreen);
   const gesture = useRef<{
     pointerId: number;
     mode: GestureMode;
@@ -341,6 +375,125 @@ function VideoPlayer({
     };
   }, [androidBridge, isAndroid]);
 
+  useEffect(() => {
+    const syncWebFullscreen = () => {
+      if (isAndroid) {
+        setWebFullscreen(false);
+        return;
+      }
+      const frame = frameRef.current;
+      const fullscreenElement = document.fullscreenElement;
+      setWebFullscreen(Boolean(
+        frame
+        && fullscreenElement
+        && (
+          frame === fullscreenElement
+          || frame.contains(fullscreenElement)
+          || fullscreenElement.contains(frame)
+        ),
+      ));
+    };
+
+    syncWebFullscreen();
+    document.addEventListener("fullscreenchange", syncWebFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncWebFullscreen);
+  }, [isAndroid]);
+
+  useEffect(() => {
+    if (!fullscreenHUDVisible) return;
+
+    let cancelled = false;
+    let androidBatteryCleanup: (() => void) | null = null;
+    let windowsPowerStatusCleanup: (() => void) | null = null;
+    let windowsPowerSettingCleanup: (() => void) | null = null;
+    let windowsResumeCleanup: (() => void) | null = null;
+
+    const setBatteryPercent = (percent: number) => {
+      setHUDBatteryPercent(
+        Number.isFinite(percent) && percent >= 0
+          ? Math.max(0, Math.min(100, Math.round(percent)))
+          : null,
+      );
+    };
+
+    const setBatteryLevel = (level: number) => setBatteryPercent(level * 100);
+
+    const syncAndroidPower = () => {
+      try {
+        const level = JSON.parse(androidBridge()?.playerGetPower?.() ?? "{}")?.level;
+        setBatteryLevel(typeof level === "number" ? level : -1);
+      } catch {
+        setHUDBatteryPercent(null);
+      }
+    };
+
+    const subscribeAndroidPower = () => {
+      androidBatteryCleanup = Events.On("player:BatteryChanged", (event) => {
+        try {
+          const rawPayload = event.data as unknown;
+          const payload = typeof rawPayload === "string"
+            ? JSON.parse(rawPayload)
+            : rawPayload as { level?: unknown } | null;
+          const level = payload && typeof payload.level === "number" ? payload.level : -1;
+          setBatteryLevel(level);
+        } catch {
+          setHUDBatteryPercent(null);
+        }
+      });
+      // ACTION_BATTERY_CHANGED is sticky, so one synchronous read gives the
+      // current value immediately; all later updates arrive through the event.
+      syncAndroidPower();
+    };
+
+    const syncDesktopPower = async () => {
+      try {
+        const percent = await AppService.GetBatteryPercent();
+        if (cancelled) return;
+        setBatteryPercent(percent);
+      } catch {
+        if (!cancelled) setHUDBatteryPercent(null);
+      }
+    };
+
+    const video = videoRef.current;
+    if (video) {
+      setHUDProgress({ position: video.currentTime, duration: video.duration });
+    }
+    setHUDClock(Date.now());
+    if (isAndroid) {
+      subscribeAndroidPower();
+    } else {
+      void syncDesktopPower();
+      windowsPowerStatusCleanup = Events.On(Events.Types.Windows.APMPowerStatusChange, () => {
+        void syncDesktopPower();
+      });
+      windowsPowerSettingCleanup = Events.On(Events.Types.Windows.APMPowerSettingChange, () => {
+        void syncDesktopPower();
+      });
+      windowsResumeCleanup = Events.On(Events.Types.Windows.APMResumeAutomatic, () => {
+        void syncDesktopPower();
+      });
+    }
+
+    let clockTimeout = 0;
+    const scheduleClockUpdate = () => {
+      clockTimeout = window.setTimeout(() => {
+        setHUDClock(Date.now());
+        scheduleClockUpdate();
+      }, 60_000 - (Date.now() % 60_000) + 50);
+    };
+    scheduleClockUpdate();
+
+    return () => {
+      cancelled = true;
+      androidBatteryCleanup?.();
+      windowsPowerStatusCleanup?.();
+      windowsPowerSettingCleanup?.();
+      windowsResumeCleanup?.();
+      window.clearTimeout(clockTimeout);
+    };
+  }, [androidBridge, fullscreenHUDVisible, isAndroid]);
+
   const clearGestureFeedbackHideTimer = useCallback(() => {
     if (gestureFeedbackHideTimerRef.current === null) return;
     window.clearTimeout(gestureFeedbackHideTimerRef.current);
@@ -378,6 +531,22 @@ function VideoPlayer({
     onPersistProgress(position, duration);
   }, [onPersistProgress]);
 
+  const syncHUDWithTimeSlider = useCallback((progress: { position: number; duration: number; dragging: boolean }) => {
+    if (!fullscreenHUDVisible) return;
+    if (progress.dragging) {
+      hudSliderDraggingRef.current = true;
+      hudSeekPendingRef.current = true;
+      setHUDProgress({ position: progress.position, duration: progress.duration });
+      return;
+    }
+    if (hudSliderDraggingRef.current) {
+      hudSliderDraggingRef.current = false;
+      // Keep the final slider target visible until the media confirms the seek.
+      // Otherwise an old timeupdate can make the HUD jump backwards while data loads.
+      hudSeekPendingRef.current = true;
+    }
+  }, [fullscreenHUDVisible]);
+
   useEffect(() => {
     const miniProgress = miniProgressRef.current;
     const playerRoot = miniProgress?.closest(".media-default-skin");
@@ -406,40 +575,72 @@ function VideoPlayer({
     const root = frame?.querySelector<HTMLElement>(".media-default-skin");
     if (!frame || !root) return;
 
+    const systemPointerIds = new Set<number>();
+    const systemTouchIds = new Set<number>();
+    let suppressSystemGestureClickUntil = 0;
+
     const isControlsTarget = (target: EventTarget | null) => {
       return target instanceof Element && Boolean(target.closest(
         ".media-controls--root, button, [role='slider'], input, select, textarea, a",
       ));
     };
 
+    const getSystemGestureGuards = () => {
+      let top = 0;
+      let bottom = 0;
+      if (!nativeFullscreenRef.current) return { top, bottom };
+      try {
+        const insets = JSON.parse(androidBridge()?.playerGetSystemBarInsets?.() ?? "{}");
+        const density = Math.max(1, window.devicePixelRatio);
+        const topInsetPx = insets?.top;
+        const bottomInsetPx = insets?.bottom;
+        top = typeof topInsetPx === "number" && Number.isFinite(topInsetPx)
+          ? Math.max(24, topInsetPx / density + 12)
+          : 36;
+        bottom = typeof bottomInsetPx === "number" && Number.isFinite(bottomInsetPx)
+          ? Math.max(24, bottomInsetPx / density + 12)
+          : 36;
+      } catch {
+        top = 36;
+        bottom = 36;
+      }
+      return { top, bottom };
+    };
+
+    const isSystemGestureStart = (clientY: number) => {
+      if (!nativeFullscreenRef.current) return false;
+      const rect = root.getBoundingClientRect();
+      const relativeY = clientY - rect.top;
+      const guards = getSystemGestureGuards();
+      return relativeY <= guards.top || relativeY >= rect.height - guards.bottom;
+    };
+
     const onPointerDown = (event: PointerEvent) => {
       if (!isAndroid) return;
-      if (isControlsTarget(event.target)) return;
-      // A new gesture owns the feedback lifetime. Cancel the previous release
-      // timer immediately so rapid swipe/release/swipe sequences cannot have an
-      // old timeout hide the new brightness indicator.
-      clearGestureFeedbackHideTimer();
       const video = videoRef.current;
       if (!video) return;
       const rect = root.getBoundingClientRect();
       const relativeX = event.clientX - rect.left;
       const relativeY = event.clientY - rect.top;
-      let topSystemGestureGuard = 0;
-      if (nativeFullscreenRef.current) {
-        try {
-          const topInsetPx = JSON.parse(androidBridge()?.playerGetSystemBarInsets?.() ?? "{}")?.top;
-          if (typeof topInsetPx === "number" && Number.isFinite(topInsetPx)) {
-            topSystemGestureGuard = Math.max(24, topInsetPx / Math.max(1, window.devicePixelRatio) + 12);
-          } else {
-            topSystemGestureGuard = 36;
-          }
-        } catch {
-          topSystemGestureGuard = 36;
-        }
+      const guards = getSystemGestureGuards();
+      const startsInSystemGestureZone = nativeFullscreenRef.current
+        && (relativeY <= guards.top || relativeY >= rect.height - guards.bottom);
+      if (startsInSystemGestureZone) {
+        systemPointerIds.add(event.pointerId);
+        gesture.current = null;
+        hideGestureFeedback();
+        // Keep Android's edge gestures available but keep the media player's
+        // Gesture/controls from seeing any part of this pointer sequence.
+        // Deliberately do not preventDefault(): the OS still owns the gesture.
+        event.stopImmediatePropagation();
+        return;
       }
-      const startsInSystemGestureZone = nativeFullscreenRef.current && relativeY <= topSystemGestureGuard;
-      const side = !startsInSystemGestureZone
-        && (relativeX <= rect.width * 0.2 || relativeX >= rect.width * 0.8);
+      if (isControlsTarget(event.target)) return;
+      // A new gesture owns the feedback lifetime. Cancel the previous release
+      // timer immediately so rapid swipe/release/swipe sequences cannot have an
+      // old timeout hide the new brightness indicator.
+      clearGestureFeedbackHideTimer();
+      const side = relativeX <= rect.width * 0.2 || relativeX >= rect.width * 0.8;
       let startBrightness = 0.5;
       if (side) {
         try {
@@ -461,16 +662,18 @@ function VideoPlayer({
         rect,
         viewportWidth: Math.max(1, window.visualViewport?.width ?? window.innerWidth ?? rect.width),
       };
-      if (!startsInSystemGestureZone) {
-        try {
-          root.setPointerCapture(event.pointerId);
-        } catch {
-          // Some WebView builds may reject capture for a pointer that has already ended.
-        }
+      try {
+        root.setPointerCapture(event.pointerId);
+      } catch {
+        // Some WebView builds may reject capture for a pointer that has already ended.
       }
     };
 
     const onPointerMove = (event: PointerEvent) => {
+      if (systemPointerIds.has(event.pointerId)) {
+        event.stopImmediatePropagation();
+        return;
+      }
       const current = gesture.current;
       const video = videoRef.current;
       if (!current || current.pointerId !== event.pointerId || !video) return;
@@ -483,6 +686,8 @@ function VideoPlayer({
       if (current.mode === "pending") {
         if (absX >= 8 && absX > absY * 1.05) {
           current.mode = "seek";
+          hudGestureDraggingRef.current = true;
+          hudSeekPendingRef.current = true;
           hideGestureFeedback();
         }
         else if (current.side && absY >= 8 && absY > absX * 1.05) {
@@ -513,11 +718,20 @@ function VideoPlayer({
         0,
         Math.min(duration, current.startTime + (dx / current.viewportWidth) * duration),
       );
+      hudSeekPendingRef.current = true;
+      if (fullscreenHUDVisible) {
+        setHUDProgress({ position: current.targetTime, duration });
+      }
       // Seek continuously so the decoder can load/display frames while the finger moves.
       video.currentTime = current.targetTime;
     };
 
     const finishPointer = (event: PointerEvent) => {
+      if (systemPointerIds.delete(event.pointerId)) {
+        suppressSystemGestureClickUntil = performance.now() + 1000;
+        event.stopImmediatePropagation();
+        return;
+      }
       const current = gesture.current;
       if (!current || current.pointerId !== event.pointerId) return;
       gesture.current = null;
@@ -527,6 +741,15 @@ function VideoPlayer({
         // The pointer may already have been released by the WebView.
       }
       if (current.mode === "seek") {
+        const video = videoRef.current;
+        hudGestureDraggingRef.current = false;
+        if (video?.seeking) {
+          hudSeekPendingRef.current = true;
+        } else if (video) {
+          hudSeekPendingRef.current = false;
+          setHUDProgress({ position: video.currentTime, duration: video.duration });
+          persistProgress(video);
+        }
         event.preventDefault();
         event.stopImmediatePropagation();
         hideGestureFeedback();
@@ -547,10 +770,50 @@ function VideoPlayer({
       hideGestureFeedback();
     };
 
+    const onTouchStart = (event: TouchEvent) => {
+      if (!isAndroid || !nativeFullscreenRef.current) return;
+      let systemGestureStarted = false;
+      for (const touch of Array.from(event.changedTouches)) {
+        if (isSystemGestureStart(touch.clientY)) {
+          systemTouchIds.add(touch.identifier);
+          systemGestureStarted = true;
+        }
+      }
+      if (systemGestureStarted) event.stopImmediatePropagation();
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (Array.from(event.changedTouches).some((touch) => systemTouchIds.has(touch.identifier))) {
+        event.stopImmediatePropagation();
+      }
+    };
+
+    const finishTouch = (event: TouchEvent) => {
+      let systemGestureEnded = false;
+      for (const touch of Array.from(event.changedTouches)) {
+        if (systemTouchIds.delete(touch.identifier)) systemGestureEnded = true;
+      }
+      if (systemGestureEnded) {
+        suppressSystemGestureClickUntil = performance.now() + 1000;
+        event.stopImmediatePropagation();
+      }
+    };
+
+    const onClick = (event: MouseEvent) => {
+      if (performance.now() >= suppressSystemGestureClickUntil) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+
     frame.addEventListener("pointerdown", onPointerDown, true);
     frame.addEventListener("pointermove", onPointerMove, { capture: true, passive: false });
     frame.addEventListener("pointerup", finishPointer, { capture: true, passive: false });
     frame.addEventListener("pointercancel", finishPointer, { capture: true, passive: false });
+    frame.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
+    frame.addEventListener("touchmove", onTouchMove, { capture: true, passive: true });
+    frame.addEventListener("touchend", finishTouch, { capture: true, passive: true });
+    frame.addEventListener("touchcancel", finishTouch, { capture: true, passive: true });
+    frame.addEventListener("click", onClick, true);
 
     return () => {
       clearGestureFeedbackHideTimer();
@@ -558,8 +821,13 @@ function VideoPlayer({
       frame.removeEventListener("pointermove", onPointerMove, true);
       frame.removeEventListener("pointerup", finishPointer, true);
       frame.removeEventListener("pointercancel", finishPointer, true);
+      frame.removeEventListener("touchstart", onTouchStart, true);
+      frame.removeEventListener("touchmove", onTouchMove, true);
+      frame.removeEventListener("touchend", finishTouch, true);
+      frame.removeEventListener("touchcancel", finishTouch, true);
+      frame.removeEventListener("click", onClick, true);
     };
-  }, [androidBridge, clearGestureFeedbackHideTimer, hideGestureFeedback, isAndroid, scheduleGestureFeedbackHide, showGestureFeedback]);
+  }, [androidBridge, clearGestureFeedbackHideTimer, fullscreenHUDVisible, hideGestureFeedback, isAndroid, persistProgress, scheduleGestureFeedbackHide, showGestureFeedback]);
 
   return (
     <div
@@ -569,6 +837,7 @@ function VideoPlayer({
       <Player.Provider>
         <DriveVideoSkin
           nativeFullscreen={isAndroid ? { active: nativeFullscreen, onToggle: toggleAndroidFullscreen } : undefined}
+          onTimeSliderProgress={syncHUDWithTimeSlider}
         >
           <Video
             ref={videoRef}
@@ -577,21 +846,36 @@ function VideoPlayer({
             autoPlay
             onLoadedMetadata={(event) => {
               const video = event.currentTarget;
+              hudSliderDraggingRef.current = false;
+              hudGestureDraggingRef.current = false;
+              hudSeekPendingRef.current = false;
               if (initialPosition > 0 && initialPosition <= video.duration) {
                 video.currentTime = Math.min(initialPosition, Math.max(0, video.duration - 0.1));
               }
+              setHUDProgress({ position: video.currentTime, duration: video.duration });
             }}
             onTimeUpdate={(event) => {
+              if (fullscreenHUDVisible && !hudSeekPendingRef.current) {
+                setHUDProgress({ position: event.currentTarget.currentTime, duration: event.currentTarget.duration });
+              }
               if (Date.now() - lastPersistedAt.current >= 3_000) {
                 persistProgress(event.currentTarget);
               }
             }}
             onSeeked={(event) => {
+              if (hudGestureDraggingRef.current || hudSliderDraggingRef.current) return;
+              hudSliderDraggingRef.current = false;
+              hudSeekPendingRef.current = false;
+              setHUDProgress({ position: event.currentTarget.currentTime, duration: event.currentTarget.duration });
               persistProgress(event.currentTarget);
             }}
             onEnded={(event) => {
               const video = event.currentTarget;
               endedRef.current = true;
+              hudSliderDraggingRef.current = false;
+              hudGestureDraggingRef.current = false;
+              hudSeekPendingRef.current = false;
+              setHUDProgress({ position: video.duration, duration: video.duration });
               if (Number.isFinite(video.duration) && video.duration > 0) {
                 lastPersistedAt.current = Date.now();
                 onPersistProgress(video.duration, video.duration);
@@ -602,6 +886,24 @@ function VideoPlayer({
             <div ref={miniProgressRef} className="video-mini-progress__fill" />
           </div>
           <div ref={gestureFeedbackRef} className="video-gesture-feedback" hidden aria-live="polite" />
+          {fullscreenHUDVisible && (
+            <div
+              className="video-fullscreen-hud"
+              style={{
+                left: `${fullscreenHUDSideOffsetPX}px`,
+                right: `${fullscreenHUDSideOffsetPX}px`,
+              }}
+              aria-hidden="true"
+            >
+              <span className="video-fullscreen-hud__chip video-fullscreen-hud__status">
+                <span>{formatHUDClock(hudClock)}</span>
+                {hudBatteryPercent !== null && <span>{hudBatteryPercent}%</span>}
+              </span>
+              <span className="video-fullscreen-hud__chip video-fullscreen-hud__progress">
+                {formatPlayerTime(hudProgress.position)} / {formatPlayerTime(hudProgress.duration)}
+              </span>
+            </div>
+          )}
         </DriveVideoSkin>
       </Player.Provider>
     </div>
@@ -1048,7 +1350,6 @@ function App() {
   const [activeVideo, setActiveVideo] = useState<ActiveVideo | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [settingsMessage, setSettingsMessage] = useState("");
   const [webdavCacheTTLInput, setWebDAVCacheTTLInput] = useState("30");
   const [quarkDownloadCacheTTLInput, setQuarkDownloadCacheTTLInput] = useState("30");
   const [quarkIDCacheTTLInput, setQuarkIDCacheTTLInput] = useState("30");
@@ -1056,9 +1357,12 @@ function App() {
   const [directoryCacheMaxSizeInput, setDirectoryCacheMaxSizeInput] = useState(String(directoryCacheSettings.maxSizeMB));
   const [thumbnailMaxAgeInput, setThumbnailMaxAgeInput] = useState("30");
   const [thumbnailMaxSizeInput, setThumbnailMaxSizeInput] = useState("512");
-  const [thumbnailOffsetPercentInput, setThumbnailOffsetPercentInput] = useState("5");
+  const [thumbnailOffsetPercentInput, setThumbnailOffsetPercentInput] = useState("10");
   const [playbackMaxAgeInput, setPlaybackMaxAgeInput] = useState("365");
   const [playbackMaxSizeInput, setPlaybackMaxSizeInput] = useState("16");
+  const [fullscreenHUDEnabledInput, setFullscreenHUDEnabledInput] = useState(false);
+  const [fullscreenHUDSideOffsetInput, setFullscreenHUDSideOffsetInput] = useState("0");
+  const [fullscreenHUDToggleSaving, setFullscreenHUDToggleSaving] = useState(false);
   const directoryRequestId = useRef(0);
   const directoryRequest = useRef<ReturnType<typeof AppService.ListDirectory> | null>(null);
   const directoryAbortController = useRef<AbortController | null>(null);
@@ -1114,6 +1418,8 @@ function App() {
     setThumbnailOffsetPercentInput(String(nextState.thumbnailOffsetPercent));
     setPlaybackMaxAgeInput(String(nextState.playbackMaxAgeDays));
     setPlaybackMaxSizeInput(String(nextState.playbackMaxSizeMB));
+    setFullscreenHUDEnabledInput(nextState.fullscreenHudEnabled);
+    setFullscreenHUDSideOffsetInput(String(nextState.fullscreenHudSideOffsetPx));
   }, []);
 
   useEffect(() => {
@@ -1250,7 +1556,7 @@ function App() {
             if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
             const dataURL = await captureVideoThumbnail(
               playbackURL,
-              state?.thumbnailOffsetPercent ?? 5,
+              state?.thumbnailOffsetPercent ?? 10,
               controller.signal,
             );
             if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
@@ -1497,7 +1803,6 @@ function App() {
     setQuarkIDCacheStats({ count: 0 });
     setShowSettings(false);
     setLoginProvider(null);
-    setSettingsMessage("");
     setError("");
     restoreProviderBrowseSession(provider);
     void refreshProviderCaches();
@@ -1530,7 +1835,6 @@ function App() {
     syncBackendState(nextState);
     restoreProviderBrowseSession(provider);
     setShowSettings(false);
-    setSettingsMessage("");
     setError("");
     void refreshProviderCaches();
     if (provider === "quark") {
@@ -1550,7 +1854,6 @@ function App() {
     syncBackendState(nextState);
     setActiveVideo(null);
     setError("");
-    setSettingsMessage("");
 
     if (nextState.connected) {
       const nextProvider = normalizeProvider(nextState.provider);
@@ -1622,37 +1925,31 @@ function App() {
 
   const saveWebDAVCacheTTL = async () => {
     const minutes = Number.parseInt(webdavCacheTTLInput, 10);
-    setSettingsMessage("");
-    setError("");
     if (!Number.isFinite(minutes)) {
-      setError("请输入有效的 123 URL 缓存分钟数");
+      toast.add({ title: "设置无效", description: "请输入有效的 123 URL 缓存分钟数", type: "error" });
       return;
     }
     try {
       const nextState = await AppService.SetWebDAVCacheTTL(minutes);
       syncBackendState(nextState);
-      setSettingsMessage("123 URL 缓存时间已保存，并立即应用。 ");
       await refreshProviderCaches();
     } catch (err) {
-      setError(errorMessage(err));
+      toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
     }
   };
 
   const saveQuarkDownloadCacheTTL = async () => {
     const minutes = Number.parseInt(quarkDownloadCacheTTLInput, 10);
-    setSettingsMessage("");
-    setError("");
     if (!Number.isFinite(minutes)) {
-      setError("请输入有效的夸克下载 URL 缓存分钟数");
+      toast.add({ title: "设置无效", description: "请输入有效的夸克下载 URL 缓存分钟数", type: "error" });
       return;
     }
     try {
       const nextState = await AppService.SetQuarkDownloadCacheTTL(minutes);
       syncBackendState(nextState);
-      setSettingsMessage("夸克下载 URL 缓存时间已保存，并立即应用。 ");
       await refreshProviderCaches();
     } catch (err) {
-      setError(errorMessage(err));
+      toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
     }
   };
 
@@ -1661,54 +1958,50 @@ function App() {
       await AppService.ClearRedirectCache(provider);
       if (provider === "quark") {
         setQuarkDownloadCacheCount(0);
-        setSettingsMessage("夸克下载 URL 缓存已清空。 ");
       } else {
         setWebDAVCacheCount(0);
-        setSettingsMessage("123 URL 缓存已清空。 ");
       }
     } catch (err) {
-      setError(errorMessage(err));
+      toast.add({ title: "清空失败", description: errorMessage(err), type: "error" });
     }
   };
 
   const saveQuarkIDCacheTTL = async () => {
     const minutes = Number.parseInt(quarkIDCacheTTLInput, 10);
-    setSettingsMessage("");
-    setError("");
     if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
-      setError("路径 ID 缓存时间必须在 1 到 1440 分钟之间");
+      toast.add({ title: "设置无效", description: "路径 ID 缓存时间必须在 1 到 1440 分钟之间", type: "error" });
       return;
     }
     try {
       const nextState = await AppService.SetQuarkIDCacheTTL(minutes);
       syncBackendState(nextState);
-      setSettingsMessage("路径 ID 缓存时间已保存，并立即应用到现有缓存。 ");
       await refreshQuarkIDCacheStats();
     } catch (err) {
-      setError(errorMessage(err));
+      toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
     }
   };
 
   const clearQuarkIDCache = async () => {
     try {
       setQuarkIDCacheStats(await AppService.ClearQuarkIDCache());
-      setSettingsMessage("路径 ID 缓存已清空。 ");
     } catch (err) {
-      setError(errorMessage(err));
+      toast.add({ title: "清空失败", description: errorMessage(err), type: "error" });
     }
   };
 
   const saveDirectoryCacheSettings = () => {
     const ttlMinutes = Number.parseInt(directoryCacheTTLInput, 10);
     const maxSizeMB = Number.parseInt(directoryCacheMaxSizeInput, 10);
-    setSettingsMessage("");
-    setError("");
     if (
       !Number.isInteger(ttlMinutes) ||
       ttlMinutes < MIN_DIRECTORY_CACHE_TTL_MINUTES ||
       ttlMinutes > MAX_DIRECTORY_CACHE_TTL_MINUTES
     ) {
-      setError(`文件列表缓存时间必须在 ${MIN_DIRECTORY_CACHE_TTL_MINUTES} 到 ${MAX_DIRECTORY_CACHE_TTL_MINUTES} 分钟之间`);
+      toast.add({
+        title: "设置无效",
+        description: `文件列表缓存时间必须在 ${MIN_DIRECTORY_CACHE_TTL_MINUTES} 到 ${MAX_DIRECTORY_CACHE_TTL_MINUTES} 分钟之间`,
+        type: "error",
+      });
       return;
     }
     if (
@@ -1716,7 +2009,11 @@ function App() {
       maxSizeMB < MIN_DIRECTORY_CACHE_MAX_SIZE_MB ||
       maxSizeMB > MAX_DIRECTORY_CACHE_MAX_SIZE_MB
     ) {
-      setError(`文件列表缓存上限必须在 ${MIN_DIRECTORY_CACHE_MAX_SIZE_MB} 到 ${MAX_DIRECTORY_CACHE_MAX_SIZE_MB} MB 之间`);
+      toast.add({
+        title: "设置无效",
+        description: `文件列表缓存上限必须在 ${MIN_DIRECTORY_CACHE_MAX_SIZE_MB} 到 ${MAX_DIRECTORY_CACHE_MAX_SIZE_MB} MB 之间`,
+        type: "error",
+      });
       return;
     }
     const nextSettings = { ttlMinutes, maxSizeMB };
@@ -1730,23 +2027,19 @@ function App() {
       // The active in-memory settings still apply even when persistence is unavailable.
     }
     refreshProviderBrowseStats(nextSettings);
-    setSettingsMessage("文件列表缓存设置已保存。 ");
   };
 
   const clearDirectoryCache = (provider: CloudProvider) => {
     providerBrowseSessions.current[provider].directoryCache.clear();
     refreshProviderBrowseStats();
-    setSettingsMessage(`${provider === "quark" ? "夸克" : "123"} 文件列表缓存已清空。 `);
   };
 
   const saveThumbnailSettings = async () => {
     const maxAgeDays = Number.parseInt(thumbnailMaxAgeInput, 10);
     const maxSizeMB = Number.parseInt(thumbnailMaxSizeInput, 10);
     const offsetPercent = Number.parseInt(thumbnailOffsetPercentInput, 10);
-    setSettingsMessage("");
-    setError("");
     if (![maxAgeDays, maxSizeMB, offsetPercent].every(Number.isFinite)) {
-      setError("请输入有效的缩略图缓存设置");
+      toast.add({ title: "设置无效", description: "请输入有效的缩略图缓存设置", type: "error" });
       return;
     }
     try {
@@ -1760,10 +2053,9 @@ function App() {
         setThumbnailImages({});
         thumbnailReloadNeeded.current = true;
       }
-      setSettingsMessage("缩略图缓存设置已保存。 ");
       await refreshThumbnailStats();
     } catch (err) {
-      setError(errorMessage(err));
+      toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
     }
   };
 
@@ -1772,23 +2064,20 @@ function App() {
       setThumbnailStats(await AppService.ClearThumbnailCache());
       setThumbnailImages({});
       thumbnailReloadNeeded.current = true;
-      setSettingsMessage("缩略图缓存已清空。 ");
     } catch (err) {
-      setError(errorMessage(err));
+      toast.add({ title: "清空失败", description: errorMessage(err), type: "error" });
     }
   };
 
   const savePlaybackProgressSettings = async () => {
     const maxAgeDays = Number.parseInt(playbackMaxAgeInput, 10);
     const maxSizeMB = Number.parseInt(playbackMaxSizeInput, 10);
-    setSettingsMessage("");
-    setError("");
     if (!Number.isInteger(maxAgeDays) || maxAgeDays < 1 || maxAgeDays > 3650) {
-      setError("播放进度保留时间必须在 1 到 3650 天之间");
+      toast.add({ title: "设置无效", description: "播放进度保留时间必须在 1 到 3650 天之间", type: "error" });
       return;
     }
     if (!Number.isInteger(maxSizeMB) || maxSizeMB < 1 || maxSizeMB > 1024) {
-      setError("播放进度存储上限必须在 1 到 1024 MB 之间");
+      toast.add({ title: "设置无效", description: "播放进度存储上限必须在 1 到 1024 MB 之间", type: "error" });
       return;
     }
     try {
@@ -1796,19 +2085,46 @@ function App() {
       setState(nextState);
       setPlaybackMaxAgeInput(String(nextState.playbackMaxAgeDays));
       setPlaybackMaxSizeInput(String(nextState.playbackMaxSizeMB));
-      setSettingsMessage("播放进度设置已保存。 ");
       await refreshPlaybackProgressStats();
     } catch (err) {
-      setError(errorMessage(err));
+      toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
+    }
+  };
+
+  const setFullscreenHUDEnabled = async (enabled: boolean) => {
+    if (!state || fullscreenHUDToggleSaving || enabled === state.fullscreenHudEnabled) return;
+
+    setFullscreenHUDToggleSaving(true);
+
+    try {
+      const nextState = await AppService.SetFullscreenHUDSettings(enabled, state.fullscreenHudSideOffsetPx);
+      syncBackendState(nextState);
+    } catch (err) {
+      toast.add({ title: "切换顶部信息失败", description: errorMessage(err), type: "error" });
+    } finally {
+      setFullscreenHUDToggleSaving(false);
+    }
+  };
+
+  const saveFullscreenHUDSettings = async () => {
+    const offsetPX = Number.parseInt(fullscreenHUDSideOffsetInput, 10);
+    if (!Number.isInteger(offsetPX) || offsetPX < 0 || offsetPX > 200) {
+      toast.add({ title: "设置无效", description: "全屏信息左右偏移必须在 0 到 200 px 之间", type: "error" });
+      return;
+    }
+    try {
+      const nextState = await AppService.SetFullscreenHUDSettings(fullscreenHUDEnabledInput, offsetPX);
+      syncBackendState(nextState);
+    } catch (err) {
+      toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
     }
   };
 
   const clearPlaybackProgress = async () => {
     try {
       setPlaybackProgressStats(await AppService.ClearPlaybackProgress());
-      setSettingsMessage("播放进度已清空。 ");
     } catch (err) {
-      setError(errorMessage(err));
+      toast.add({ title: "清空失败", description: errorMessage(err), type: "error" });
     }
   };
 
@@ -1816,7 +2132,7 @@ function App() {
     try {
       await AppService.OpenStorageDirectory();
     } catch (err) {
-      setError(errorMessage(err));
+      toast.add({ title: "打开目录失败", description: errorMessage(err), type: "error" });
     }
   };
 
@@ -1898,6 +2214,8 @@ function App() {
   const playbackProgressSettingsChanged =
     Number.parseInt(playbackMaxAgeInput, 10) !== state.playbackMaxAgeDays ||
     Number.parseInt(playbackMaxSizeInput, 10) !== state.playbackMaxSizeMB;
+  const fullscreenHUDSettingsChanged =
+    Number.parseInt(fullscreenHUDSideOffsetInput, 10) !== state.fullscreenHudSideOffsetPx;
 
   return (
     <div className="app-shell">
@@ -1938,7 +2256,6 @@ function App() {
             size="sm"
             onClick={() => {
               setShowSettings(true);
-              setSettingsMessage("");
               void refreshProviderCaches();
               refreshProviderBrowseStats();
               void refreshThumbnailStats();
@@ -2012,13 +2329,12 @@ function App() {
                         {currentPath === "/" ? (
                           <BreadcrumbPage>根目录</BreadcrumbPage>
                         ) : (
-                          <button
-                            type="button"
-                            className="transition-colors hover:text-foreground"
+                          <BreadcrumbLink
+                            render={<button type="button" />}
                             onClick={() => navigateDirectory("/")}
                           >
                             根目录
-                          </button>
+                          </BreadcrumbLink>
                         )}
                       </BreadcrumbItem>
                       {pathParts.map((part, index) => (
@@ -2028,13 +2344,12 @@ function App() {
                             {index === pathParts.length - 1 ? (
                               <BreadcrumbPage>{part.name}</BreadcrumbPage>
                             ) : (
-                              <button
-                                type="button"
-                                className="transition-colors hover:text-foreground"
+                              <BreadcrumbLink
+                                render={<button type="button" />}
                                 onClick={() => navigateDirectory(part.path)}
                               >
                                 {part.name}
-                              </button>
+                              </BreadcrumbLink>
                             )}
                           </BreadcrumbItem>
                         </Fragment>
@@ -2171,25 +2486,6 @@ function App() {
           </DialogHeader>
           <ScrollArea className="min-h-0 flex-1">
             <div className="mx-auto grid w-full max-w-3xl gap-3 p-3 sm:gap-4 sm:p-6">
-              {error && (
-                <Alert variant="destructive">
-                  <CircleAlert className="size-4" />
-                  <AlertTitle>请求失败</AlertTitle>
-                  <AlertDescription className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:gap-4">
-                    <span>{error}</span>
-                    <Button variant="ghost" size="sm" className="-my-1" onClick={() => setError("")}>
-                      关闭
-                    </Button>
-                  </AlertDescription>
-                </Alert>
-              )}
-              {settingsMessage && (
-                <Alert>
-                  <RotateCcw className="size-4" />
-                  <AlertTitle>已更新</AlertTitle>
-                  <AlertDescription>{settingsMessage}</AlertDescription>
-                </Alert>
-              )}
               <Card>
                 <CardHeader>
                   <CardTitle>浏览缓存规则</CardTitle>
@@ -2610,6 +2906,45 @@ function App() {
 
               <Card>
                 <CardHeader>
+                  <CardTitle>全屏顶部信息</CardTitle>
+                  <CardDescription>
+                    进入全屏后，左上角用一个标签显示时间和电量百分比，右上角显示当前播放进度。标签始终贴着顶部，左右偏移只调整距屏幕两侧的距离。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex max-w-xs items-center justify-between gap-4">
+                    <Label htmlFor="fullscreen-hud-enabled">显示顶部信息</Label>
+                    <Switch
+                      id="fullscreen-hud-enabled"
+                      checked={fullscreenHUDEnabledInput}
+                      disabled={fullscreenHUDToggleSaving}
+                      onCheckedChange={(checked) => void setFullscreenHUDEnabled(checked)}
+                    />
+                  </div>
+                  <div className="grid max-w-xs gap-2">
+                    <Label htmlFor="fullscreen-hud-side-offset">左右偏移（px）</Label>
+                    <Input
+                      id="fullscreen-hud-side-offset"
+                      type="number"
+                      min={0}
+                      max={200}
+                      className="transition-none"
+                      value={fullscreenHUDSideOffsetInput}
+                      onChange={(event) => setFullscreenHUDSideOffsetInput(event.target.value)}
+                      disabled={!fullscreenHUDEnabledInput}
+                    />
+                  </div>
+                  <Button
+                    onClick={() => void saveFullscreenHUDSettings()}
+                    disabled={!fullscreenHUDEnabledInput || !fullscreenHUDSettingsChanged}
+                  >
+                    保存
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
                   <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:gap-4">
                     <div className="space-y-1.5">
                       <CardTitle>本地存储</CardTitle>
@@ -2689,6 +3024,8 @@ function App() {
                 src={activeVideo.url}
                 initialPosition={activeVideo.resumePosition}
                 isAndroid={isAndroid}
+                fullscreenHUDEnabled={state.fullscreenHudEnabled}
+                fullscreenHUDSideOffsetPX={state.fullscreenHudSideOffsetPx}
                 onPersistProgress={(position, duration) => {
                   persistPlaybackProgress(activeVideo.path, position, duration);
                 }}
@@ -2697,6 +3034,7 @@ function App() {
           </div>
         </DialogContent>
       </Dialog>
+      <Toaster />
     </div>
   );
 }

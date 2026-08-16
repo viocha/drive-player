@@ -137,6 +137,11 @@ public class WailsJSBridge {
     }
 
     @JavascriptInterface
+    public String playerGetPower() {
+        return bridge.getPowerJson();
+    }
+
+    @JavascriptInterface
     public void playerSetFullscreen(boolean fullscreen, boolean portrait) {
         bridge.setPlayerFullscreen(fullscreen, portrait);
     }

@@ -750,7 +750,10 @@ public class MainActivity extends AppCompatActivity {
             o.put("level", (double) level);
             o.put("state", state);
             o.put("lowPowerMode", lowPower);
-            if (bridge != null) bridge.emitSystemEvent("android:BatteryChanged", o.toString());
+            // Frontend Events.On() listens on Wails' custom-event bus. The
+            // typed ApplicationEvent bus is separate, so push live player
+            // battery changes through the custom channel explicitly.
+            if (bridge != null) bridge.emitEvent("player:BatteryChanged", o.toString());
         } catch (Exception e) {
             Log.e(TAG, "emitBattery failed", e);
         }

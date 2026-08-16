@@ -19,6 +19,8 @@ export interface AppState {
     "thumbnailOffsetPercent": number;
     "playbackMaxAgeDays": number;
     "playbackMaxSizeMB": number;
+    "fullscreenHudEnabled": boolean;
+    "fullscreenHudSideOffsetPx": number;
     "storageDirectory": string;
     "configPath": string;
     "thumbnailDirectory": string;

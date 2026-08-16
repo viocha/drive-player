@@ -25,6 +25,10 @@ export function ClearThumbnailCache(): $CancellablePromise<$models.ThumbnailCach
     return $Call.ByID(3145136249);
 }
 
+export function GetBatteryPercent(): $CancellablePromise<number> {
+    return $Call.ByID(2336122500);
+}
+
 export function GetPlaybackProgress(remotePath: string): $CancellablePromise<$models.PlaybackProgressResult> {
     return $Call.ByID(4283831292, remotePath);
 }
@@ -83,6 +87,10 @@ export function SavePlaybackProgress(remotePath: string, position: number, durat
 
 export function SaveThumbnail(remotePath: string, modifiedAt: string, dataURL: string): $CancellablePromise<$models.ThumbnailCacheStats> {
     return $Call.ByID(1600312045, remotePath, modifiedAt, dataURL);
+}
+
+export function SetFullscreenHUDSettings(enabled: boolean, offsetPX: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(1802682481, enabled, offsetPX);
 }
 
 export function SetPlaybackProgressSettings(maxAgeDays: number, maxSizeMB: number): $CancellablePromise<$models.AppState> {

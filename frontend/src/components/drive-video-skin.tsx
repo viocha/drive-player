@@ -4,6 +4,7 @@ import {
   forwardRef,
   type PropsWithChildren,
   type ReactNode,
+  useEffect,
 } from "react";
 import {
   audioText,
@@ -426,11 +427,29 @@ function VolumePopover(): ReactNode {
 export type DriveVideoSkinProps = PropsWithChildren<{
   className?: string;
   style?: CSSProperties;
+  onTimeSliderProgress?: (progress: { position: number; duration: number; dragging: boolean }) => void;
   nativeFullscreen?: {
     active: boolean;
     onToggle: () => void;
   };
 }>;
+
+function TimeSliderProgressSync({
+  position,
+  duration,
+  dragging,
+  onProgress,
+}: {
+  position: number;
+  duration: number;
+  dragging: boolean;
+  onProgress?: DriveVideoSkinProps["onTimeSliderProgress"];
+}) {
+  useEffect(() => {
+    onProgress?.({ position, duration, dragging });
+  }, [dragging, duration, onProgress, position]);
+  return null;
+}
 
 function NativeFullscreenControl({ active, onToggle }: { active: boolean; onToggle: () => void }) {
   const label = active ? "退出全屏" : "进入全屏";
@@ -452,7 +471,13 @@ function NativeFullscreenControl({ active, onToggle }: { active: boolean; onTogg
  * Ejected from the Video.js v10 default React video skin so the application's
  * gesture semantics are explicit instead of overriding preset behavior later.
  */
-export function DriveVideoSkin({ children, className, style, nativeFullscreen }: DriveVideoSkinProps): ReactNode {
+export function DriveVideoSkin({
+  children,
+  className,
+  style,
+  nativeFullscreen,
+  onTimeSliderProgress,
+}: DriveVideoSkinProps): ReactNode {
   return (
     <Container className={`media-default-skin media-default-skin--video ${className ?? ""}`} style={style}>
       {children}
@@ -503,21 +528,34 @@ export function DriveVideoSkin({ children, className, style, nativeFullscreen }:
 
             <div className="media-time-controls">
               <Time.Value type="current" className="media-time" />
-              <TimeSlider.Root className="media-slider">
-                <TimeSlider.Track className="media-slider__track">
-                  <TimeSlider.Fill className="media-slider__fill" />
-                  <TimeSlider.Buffer className="media-slider__buffer" />
-                </TimeSlider.Track>
-                <TimeSlider.Thumb className="media-slider__thumb" />
-                <div className="media-surface media-thumbnail media-slider__thumbnail">
-                  <Slider.Thumbnail className="media-thumbnail__image" />
-                  <TimeSlider.Value type="pointer" className="media-time media-thumbnail__time" />
-                  <SpinnerIcon className="media-thumbnail__spinner media-icon" />
-                </div>
-                <TimeSlider.Preview className="media-slider__preview">
-                  <TimeSlider.Value type="pointer" className="media-time media-slider__value" />
-                </TimeSlider.Preview>
-              </TimeSlider.Root>
+              <TimeSlider.Root
+                className="media-slider"
+                render={(props, sliderState) => (
+                  <div {...props}>
+                    <TimeSliderProgressSync
+                      position={sliderState.dragging
+                        ? sliderState.duration * sliderState.pointerPercent / 100
+                        : sliderState.currentTime}
+                      duration={sliderState.duration}
+                      dragging={sliderState.dragging}
+                      onProgress={onTimeSliderProgress}
+                    />
+                    <TimeSlider.Track className="media-slider__track">
+                      <TimeSlider.Fill className="media-slider__fill" />
+                      <TimeSlider.Buffer className="media-slider__buffer" />
+                    </TimeSlider.Track>
+                    <TimeSlider.Thumb className="media-slider__thumb" />
+                    <div className="media-surface media-thumbnail media-slider__thumbnail">
+                      <Slider.Thumbnail className="media-thumbnail__image" />
+                      <TimeSlider.Value type="pointer" className="media-time media-thumbnail__time" />
+                      <SpinnerIcon className="media-thumbnail__spinner media-icon" />
+                    </div>
+                    <TimeSlider.Preview className="media-slider__preview">
+                      <TimeSlider.Value type="pointer" className="media-time media-slider__value" />
+                    </TimeSlider.Preview>
+                  </div>
+                )}
+              />
               <Time.Value toggle type="remaining" className="media-time" />
             </div>
 

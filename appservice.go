@@ -23,28 +23,32 @@ import (
 )
 
 const (
-	defaultWebDAVEndpoint         = "https://webdav.123pan.cn/webdav"
-	defaultURLCacheTTL            = 30
-	defaultQuarkIDCacheTTL        = 30
-	defaultThumbnailMaxAgeDays    = 30
-	defaultThumbnailMaxSizeMB     = 512
-	defaultThumbnailOffsetPercent = 5
-	defaultPlaybackMaxAgeDays     = 365
-	defaultPlaybackMaxSizeMB      = 16
-	minThumbnailMaxAgeDays        = 1
-	maxThumbnailMaxAgeDays        = 3650
-	minThumbnailMaxSizeMB         = 16
-	maxThumbnailMaxSizeMB         = 10240
-	minThumbnailOffsetPercent     = 0
-	maxThumbnailOffsetPercent     = 100
-	minPlaybackMaxAgeDays         = 1
-	maxPlaybackMaxAgeDays         = 3650
-	minPlaybackMaxSizeMB          = 1
-	maxPlaybackMaxSizeMB          = 1024
-	minQuarkIDCacheTTLMinutes     = 1
-	maxQuarkIDCacheTTLMinutes     = 1440
-	provider123                   = "123"
-	providerQuark                 = "quark"
+	defaultWebDAVEndpoint            = "https://webdav.123pan.cn/webdav"
+	defaultURLCacheTTL               = 30
+	defaultQuarkIDCacheTTL           = 30
+	defaultThumbnailMaxAgeDays       = 30
+	defaultThumbnailMaxSizeMB        = 512
+	defaultThumbnailOffsetPercent    = 10
+	defaultPlaybackMaxAgeDays        = 365
+	defaultPlaybackMaxSizeMB         = 16
+	defaultFullscreenHUDEnabled      = false
+	defaultFullscreenHUDSideOffsetPX = 0
+	minThumbnailMaxAgeDays           = 1
+	maxThumbnailMaxAgeDays           = 3650
+	minThumbnailMaxSizeMB            = 16
+	maxThumbnailMaxSizeMB            = 10240
+	minThumbnailOffsetPercent        = 0
+	maxThumbnailOffsetPercent        = 100
+	minPlaybackMaxAgeDays            = 1
+	maxPlaybackMaxAgeDays            = 3650
+	minPlaybackMaxSizeMB             = 1
+	maxPlaybackMaxSizeMB             = 1024
+	minFullscreenHUDSideOffsetPX     = 0
+	maxFullscreenHUDSideOffsetPX     = 200
+	minQuarkIDCacheTTLMinutes        = 1
+	maxQuarkIDCacheTTLMinutes        = 1440
+	provider123                      = "123"
+	providerQuark                    = "quark"
 )
 
 type AppState struct {
@@ -65,6 +69,8 @@ type AppState struct {
 	ThumbnailOffsetPercent       int    `json:"thumbnailOffsetPercent"`
 	PlaybackMaxAgeDays           int    `json:"playbackMaxAgeDays"`
 	PlaybackMaxSizeMB            int    `json:"playbackMaxSizeMB"`
+	FullscreenHUDEnabled         bool   `json:"fullscreenHudEnabled"`
+	FullscreenHUDSideOffsetPX    int    `json:"fullscreenHudSideOffsetPx"`
 	StorageDirectory             string `json:"storageDirectory"`
 	ConfigPath                   string `json:"configPath"`
 	ThumbnailDirectory           string `json:"thumbnailDirectory"`
@@ -92,6 +98,8 @@ type diskConfig struct {
 	ThumbnailOffsetPercent       int    `json:"thumbnailOffsetPercent"`
 	PlaybackMaxAgeDays           int    `json:"playbackMaxAgeDays"`
 	PlaybackMaxSizeMB            int    `json:"playbackMaxSizeMB"`
+	FullscreenHUDEnabled         bool   `json:"fullscreenHudEnabled"`
+	FullscreenHUDSideOffsetPX    int    `json:"fullscreenHudSideOffsetPx"`
 	Username                     string `json:"username"`
 	Password                     string `json:"password"`
 	Provider                     string `json:"provider"`
@@ -134,6 +142,8 @@ func NewAppService() (*AppService, error) {
 		ThumbnailOffsetPercent:       defaultThumbnailOffsetPercent,
 		PlaybackMaxAgeDays:           defaultPlaybackMaxAgeDays,
 		PlaybackMaxSizeMB:            defaultPlaybackMaxSizeMB,
+		FullscreenHUDEnabled:         defaultFullscreenHUDEnabled,
+		FullscreenHUDSideOffsetPX:    defaultFullscreenHUDSideOffsetPX,
 		Provider:                     provider123,
 	}
 	if data, err := os.ReadFile(configPath); err == nil {
@@ -162,6 +172,9 @@ func NewAppService() (*AppService, error) {
 	}
 	if config.PlaybackMaxSizeMB < minPlaybackMaxSizeMB || config.PlaybackMaxSizeMB > maxPlaybackMaxSizeMB {
 		config.PlaybackMaxSizeMB = defaultPlaybackMaxSizeMB
+	}
+	if config.FullscreenHUDSideOffsetPX < minFullscreenHUDSideOffsetPX || config.FullscreenHUDSideOffsetPX > maxFullscreenHUDSideOffsetPX {
+		config.FullscreenHUDSideOffsetPX = defaultFullscreenHUDSideOffsetPX
 	}
 
 	proxy, err := NewWebDAVProxy(defaultWebDAVEndpoint, time.Duration(config.WebDAVCacheTTLMinutes)*time.Minute)
@@ -260,6 +273,8 @@ func (s *AppService) GetState() AppState {
 		ThumbnailOffsetPercent:       s.config.ThumbnailOffsetPercent,
 		PlaybackMaxAgeDays:           s.config.PlaybackMaxAgeDays,
 		PlaybackMaxSizeMB:            s.config.PlaybackMaxSizeMB,
+		FullscreenHUDEnabled:         s.config.FullscreenHUDEnabled,
+		FullscreenHUDSideOffsetPX:    s.config.FullscreenHUDSideOffsetPX,
 		StorageDirectory:             storageDirectory,
 		ConfigPath:                   s.configPath,
 		ThumbnailDirectory:           filepath.Join(storageDirectory, "thumbnails"),
@@ -645,6 +660,31 @@ func (s *AppService) SetPlaybackProgressSettings(maxAgeDays, maxSizeMB int) (App
 		return AppState{}, err
 	}
 	return s.GetState(), nil
+}
+
+func (s *AppService) SetFullscreenHUDSettings(enabled bool, offsetPX int) (AppState, error) {
+	if offsetPX < minFullscreenHUDSideOffsetPX || offsetPX > maxFullscreenHUDSideOffsetPX {
+		return AppState{}, fmt.Errorf("全屏信息左右偏移必须在 %d 到 %d px 之间", minFullscreenHUDSideOffsetPX, maxFullscreenHUDSideOffsetPX)
+	}
+
+	s.mu.Lock()
+	previous := s.config
+	s.config.FullscreenHUDEnabled = enabled
+	s.config.FullscreenHUDSideOffsetPX = offsetPX
+	config := s.config
+	s.mu.Unlock()
+
+	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.config = previous
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	return s.GetState(), nil
+}
+
+func (s *AppService) GetBatteryPercent() int {
+	return platformBatteryPercent()
 }
 
 func (s *AppService) OpenStorageDirectory() error {
