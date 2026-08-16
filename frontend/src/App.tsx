@@ -1,7 +1,7 @@
 import { FormEvent, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "@videojs/react/video/skin.css";
 import { createPlayer, videoFeatures } from "@videojs/react";
-import { Video, VideoSkin } from "@videojs/react/video";
+import { Video } from "@videojs/react/video";
 import {
   ArrowLeft,
   ArrowRight,
@@ -17,6 +17,7 @@ import {
   Settings,
   Trash2,
 } from "lucide-react";
+import { System } from "@wailsio/runtime";
 import { AppService } from "../bindings/drive-player";
 import type {
   AppState,
@@ -26,6 +27,16 @@ import type {
   ThumbnailCacheStats,
 } from "../bindings/drive-player";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import {
   Breadcrumb,
@@ -54,6 +65,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -63,6 +75,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { DriveVideoSkin } from "@/components/drive-video-skin";
 
 const Player = createPlayer({ features: videoFeatures });
 
@@ -243,15 +256,119 @@ function VideoPlayer({
   src,
   initialPosition,
   onPersistProgress,
+  isAndroid,
 }: {
   src: string;
   initialPosition: number;
   onPersistProgress: (position: number, duration: number) => void;
+  isAndroid: boolean;
 }) {
+  type GestureMode = "pending" | "seek" | "brightness";
+  type AndroidPlayerBridge = {
+    playerEnsureBrightnessAccess?: () => boolean;
+    playerGetBrightness?: () => string;
+    playerSetBrightness?: (percent: number) => void;
+    playerGetSystemBarInsets?: () => string;
+    playerSetFullscreen?: (fullscreen: boolean, portrait: boolean) => void;
+  };
+
+  const frameRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const miniProgressRef = useRef<HTMLDivElement | null>(null);
+  const gestureFeedbackRef = useRef<HTMLDivElement | null>(null);
+  const gestureFeedbackHideTimerRef = useRef<number | null>(null);
   const lastPersistedAt = useRef(0);
   const endedRef = useRef(false);
+  const [nativeFullscreen, setNativeFullscreen] = useState(false);
+  const nativeFullscreenRef = useRef(false);
+  const gesture = useRef<{
+    pointerId: number;
+    mode: GestureMode;
+    startX: number;
+    startY: number;
+    startTime: number;
+    startBrightness: number;
+    targetTime: number;
+    side: boolean;
+    rect: DOMRect;
+    viewportWidth: number;
+  } | null>(null);
+
+  const androidBridge = useCallback(() => {
+    if (!isAndroid) return null;
+    return (window as Window & { wails?: AndroidPlayerBridge }).wails ?? null;
+  }, [isAndroid]);
+
+  const setAndroidFullscreen = useCallback((fullscreen: boolean) => {
+    if (!isAndroid) return;
+    const video = videoRef.current;
+    const portrait = Boolean(
+      fullscreen
+      && video
+      && video.videoHeight > 0
+      && video.videoHeight > video.videoWidth,
+    );
+    nativeFullscreenRef.current = fullscreen;
+    androidBridge()?.playerSetFullscreen?.(fullscreen, portrait);
+    setNativeFullscreen(fullscreen);
+  }, [androidBridge, isAndroid]);
+
+  const toggleAndroidFullscreen = useCallback(() => {
+    setAndroidFullscreen(!nativeFullscreen);
+  }, [nativeFullscreen, setAndroidFullscreen]);
+
+  useEffect(() => {
+    if (!isAndroid) return;
+    const backWindow = window as Window & { __drivePlayerExitFullscreen?: () => boolean };
+    backWindow.__drivePlayerExitFullscreen = () => {
+      if (!nativeFullscreen) return false;
+      setAndroidFullscreen(false);
+      return true;
+    };
+    return () => {
+      delete backWindow.__drivePlayerExitFullscreen;
+    };
+  }, [isAndroid, nativeFullscreen, setAndroidFullscreen]);
+
+  // Native fullscreen is tied to the lifetime of the player itself. Keeping
+  // this teardown separate prevents gesture-effect dependency changes from
+  // accidentally issuing an "exit fullscreen" call while still mounted.
+  useEffect(() => {
+    if (!isAndroid) return;
+    return () => {
+      nativeFullscreenRef.current = false;
+      androidBridge()?.playerSetFullscreen?.(false, false);
+    };
+  }, [androidBridge, isAndroid]);
+
+  const clearGestureFeedbackHideTimer = useCallback(() => {
+    if (gestureFeedbackHideTimerRef.current === null) return;
+    window.clearTimeout(gestureFeedbackHideTimerRef.current);
+    gestureFeedbackHideTimerRef.current = null;
+  }, []);
+
+  const showGestureFeedback = useCallback((message: string) => {
+    clearGestureFeedbackHideTimer();
+    const feedback = gestureFeedbackRef.current;
+    if (!feedback) return;
+    feedback.textContent = message;
+    feedback.hidden = false;
+  }, [clearGestureFeedbackHideTimer]);
+
+  const hideGestureFeedback = useCallback(() => {
+    clearGestureFeedbackHideTimer();
+    const feedback = gestureFeedbackRef.current;
+    if (feedback) feedback.hidden = true;
+  }, [clearGestureFeedbackHideTimer]);
+
+  const scheduleGestureFeedbackHide = useCallback((delayMs = 550) => {
+    clearGestureFeedbackHideTimer();
+    gestureFeedbackHideTimerRef.current = window.setTimeout(() => {
+      gestureFeedbackHideTimerRef.current = null;
+      const feedback = gestureFeedbackRef.current;
+      if (feedback) feedback.hidden = true;
+    }, delayMs);
+  }, [clearGestureFeedbackHideTimer]);
 
   const persistProgress = useCallback((video: HTMLVideoElement) => {
     const position = video.currentTime;
@@ -284,10 +401,175 @@ function VideoPlayer({
     if (video) persistProgress(video);
   }, [persistProgress]);
 
+  useEffect(() => {
+    const frame = frameRef.current;
+    const root = frame?.querySelector<HTMLElement>(".media-default-skin");
+    if (!frame || !root) return;
+
+    const isControlsTarget = (target: EventTarget | null) => {
+      return target instanceof Element && Boolean(target.closest(
+        ".media-controls--root, button, [role='slider'], input, select, textarea, a",
+      ));
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (!isAndroid) return;
+      if (isControlsTarget(event.target)) return;
+      // A new gesture owns the feedback lifetime. Cancel the previous release
+      // timer immediately so rapid swipe/release/swipe sequences cannot have an
+      // old timeout hide the new brightness indicator.
+      clearGestureFeedbackHideTimer();
+      const video = videoRef.current;
+      if (!video) return;
+      const rect = root.getBoundingClientRect();
+      const relativeX = event.clientX - rect.left;
+      const relativeY = event.clientY - rect.top;
+      let topSystemGestureGuard = 0;
+      if (nativeFullscreenRef.current) {
+        try {
+          const topInsetPx = JSON.parse(androidBridge()?.playerGetSystemBarInsets?.() ?? "{}")?.top;
+          if (typeof topInsetPx === "number" && Number.isFinite(topInsetPx)) {
+            topSystemGestureGuard = Math.max(24, topInsetPx / Math.max(1, window.devicePixelRatio) + 12);
+          } else {
+            topSystemGestureGuard = 36;
+          }
+        } catch {
+          topSystemGestureGuard = 36;
+        }
+      }
+      const startsInSystemGestureZone = nativeFullscreenRef.current && relativeY <= topSystemGestureGuard;
+      const side = !startsInSystemGestureZone
+        && (relativeX <= rect.width * 0.2 || relativeX >= rect.width * 0.8);
+      let startBrightness = 0.5;
+      if (side) {
+        try {
+          const value = JSON.parse(androidBridge()?.playerGetBrightness?.() ?? "{}")?.value;
+          if (typeof value === "number" && Number.isFinite(value)) startBrightness = value;
+        } catch {
+          // Keep the neutral fallback if the native reading is unavailable.
+        }
+      }
+      gesture.current = {
+        pointerId: event.pointerId,
+        mode: "pending",
+        startX: event.clientX,
+        startY: event.clientY,
+        startTime: video.currentTime,
+        startBrightness,
+        targetTime: video.currentTime,
+        side,
+        rect,
+        viewportWidth: Math.max(1, window.visualViewport?.width ?? window.innerWidth ?? rect.width),
+      };
+      if (!startsInSystemGestureZone) {
+        try {
+          root.setPointerCapture(event.pointerId);
+        } catch {
+          // Some WebView builds may reject capture for a pointer that has already ended.
+        }
+      }
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      const current = gesture.current;
+      const video = videoRef.current;
+      if (!current || current.pointerId !== event.pointerId || !video) return;
+      if (!isAndroid) return;
+
+      const dx = event.clientX - current.startX;
+      const dy = event.clientY - current.startY;
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+      if (current.mode === "pending") {
+        if (absX >= 8 && absX > absY * 1.05) {
+          current.mode = "seek";
+          hideGestureFeedback();
+        }
+        else if (current.side && absY >= 8 && absY > absX * 1.05) {
+          if (androidBridge()?.playerEnsureBrightnessAccess?.() === false) {
+            gesture.current = null;
+            return;
+          }
+          current.mode = "brightness";
+        }
+        else return;
+
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      if (current.mode === "brightness") {
+        const rawPercent = (current.startBrightness - dy / current.rect.height) * 100;
+        const percent = Math.max(5, Math.min(100, Math.round(rawPercent / 5) * 5));
+        androidBridge()?.playerSetBrightness?.(percent);
+        showGestureFeedback(`亮度 ${percent}%`);
+        return;
+      }
+
+      const duration = video.duration;
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      current.targetTime = Math.max(
+        0,
+        Math.min(duration, current.startTime + (dx / current.viewportWidth) * duration),
+      );
+      // Seek continuously so the decoder can load/display frames while the finger moves.
+      video.currentTime = current.targetTime;
+    };
+
+    const finishPointer = (event: PointerEvent) => {
+      const current = gesture.current;
+      if (!current || current.pointerId !== event.pointerId) return;
+      gesture.current = null;
+      try {
+        if (root.hasPointerCapture(event.pointerId)) root.releasePointerCapture(event.pointerId);
+      } catch {
+        // The pointer may already have been released by the WebView.
+      }
+      if (current.mode === "seek") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        hideGestureFeedback();
+        return;
+      }
+      if (current.mode === "brightness") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        scheduleGestureFeedbackHide();
+        return;
+      }
+
+      if (event.type === "pointercancel") {
+        hideGestureFeedback();
+        return;
+      }
+
+      hideGestureFeedback();
+    };
+
+    frame.addEventListener("pointerdown", onPointerDown, true);
+    frame.addEventListener("pointermove", onPointerMove, { capture: true, passive: false });
+    frame.addEventListener("pointerup", finishPointer, { capture: true, passive: false });
+    frame.addEventListener("pointercancel", finishPointer, { capture: true, passive: false });
+
+    return () => {
+      clearGestureFeedbackHideTimer();
+      frame.removeEventListener("pointerdown", onPointerDown, true);
+      frame.removeEventListener("pointermove", onPointerMove, true);
+      frame.removeEventListener("pointerup", finishPointer, true);
+      frame.removeEventListener("pointercancel", finishPointer, true);
+    };
+  }, [androidBridge, clearGestureFeedbackHideTimer, hideGestureFeedback, isAndroid, scheduleGestureFeedbackHide, showGestureFeedback]);
+
   return (
-    <div className="video-player-frame">
+    <div
+      ref={frameRef}
+      className={`video-player-frame${isAndroid ? " video-player-frame--android" : ""}${nativeFullscreen ? " video-player-frame--fullscreen" : ""}`}
+    >
       <Player.Provider>
-        <VideoSkin>
+        <DriveVideoSkin
+          nativeFullscreen={isAndroid ? { active: nativeFullscreen, onToggle: toggleAndroidFullscreen } : undefined}
+        >
           <Video
             ref={videoRef}
             src={src}
@@ -319,7 +601,8 @@ function VideoPlayer({
           <div className="video-mini-progress" aria-hidden="true">
             <div ref={miniProgressRef} className="video-mini-progress__fill" />
           </div>
-        </VideoSkin>
+          <div ref={gestureFeedbackRef} className="video-gesture-feedback" hidden aria-live="polite" />
+        </DriveVideoSkin>
       </Player.Provider>
     </div>
   );
@@ -342,7 +625,7 @@ function isVideo(entry: FileEntry) {
   return VIDEO_EXTENSIONS.has(extension);
 }
 
-function captureVideoThumbnail(src: string, offsetSeconds: number, signal: AbortSignal) {
+function captureVideoThumbnail(src: string, offsetPercent: number, signal: AbortSignal) {
   return new Promise<string>((resolve, reject) => {
     const video = document.createElement("video");
     let settled = false;
@@ -392,9 +675,10 @@ function captureVideoThumbnail(src: string, offsetSeconds: number, signal: Abort
     video.addEventListener("error", () => finish(new Error("视频缩略图加载失败")), { once: true });
     video.addEventListener("loadedmetadata", () => {
       const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const normalizedPercent = Math.max(0, Math.min(100, offsetPercent));
       const target = duration > 0
-        ? Math.min(Math.max(0, offsetSeconds), Math.max(0, duration - 0.25))
-        : Math.max(0, offsetSeconds);
+        ? Math.min((duration * normalizedPercent) / 100, Math.max(0, duration - 0.25))
+        : 0;
       if (target <= 0.05) {
         if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) capture();
         else video.addEventListener("loadeddata", capture, { once: true });
@@ -725,6 +1009,10 @@ function AccountLoginDialog({
 }
 
 function App() {
+  const userAgent = navigator.userAgent;
+  const isAndroid = System.IsAndroid() || /Android/i.test(userAgent);
+  const isIOS = System.IsIOS() || /iPhone|iPad|iPod/i.test(userAgent);
+  const isMobile = System.IsMobile() || isAndroid || isIOS;
   const [directoryCacheSettings, setDirectoryCacheSettings] = useState<DirectoryCacheSettings>(() =>
     loadDirectoryCacheSettings(),
   );
@@ -755,6 +1043,7 @@ function App() {
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [loginProvider, setLoginProvider] = useState<CloudProvider | null>(null);
   const [activeVideo, setActiveVideo] = useState<ActiveVideo | null>(null);
   const [loading, setLoading] = useState(false);
@@ -767,7 +1056,7 @@ function App() {
   const [directoryCacheMaxSizeInput, setDirectoryCacheMaxSizeInput] = useState(String(directoryCacheSettings.maxSizeMB));
   const [thumbnailMaxAgeInput, setThumbnailMaxAgeInput] = useState("30");
   const [thumbnailMaxSizeInput, setThumbnailMaxSizeInput] = useState("512");
-  const [thumbnailOffsetInput, setThumbnailOffsetInput] = useState("5");
+  const [thumbnailOffsetPercentInput, setThumbnailOffsetPercentInput] = useState("5");
   const [playbackMaxAgeInput, setPlaybackMaxAgeInput] = useState("365");
   const [playbackMaxSizeInput, setPlaybackMaxSizeInput] = useState("16");
   const directoryRequestId = useRef(0);
@@ -822,7 +1111,7 @@ function App() {
     setQuarkIDCacheTTLInput(String(nextState.quarkIDCacheTTLMinutes));
     setThumbnailMaxAgeInput(String(nextState.thumbnailMaxAgeDays));
     setThumbnailMaxSizeInput(String(nextState.thumbnailMaxSizeMB));
-    setThumbnailOffsetInput(String(nextState.thumbnailOffsetSeconds));
+    setThumbnailOffsetPercentInput(String(nextState.thumbnailOffsetPercent));
     setPlaybackMaxAgeInput(String(nextState.playbackMaxAgeDays));
     setPlaybackMaxSizeInput(String(nextState.playbackMaxSizeMB));
   }, []);
@@ -961,7 +1250,7 @@ function App() {
             if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
             const dataURL = await captureVideoThumbnail(
               playbackURL,
-              state?.thumbnailOffsetSeconds ?? 5,
+              state?.thumbnailOffsetPercent ?? 5,
               controller.signal,
             );
             if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
@@ -978,7 +1267,7 @@ function App() {
       const workerCount = Math.min(THUMBNAIL_CONCURRENCY, videos.length);
       await Promise.all(Array.from({ length: workerCount }, () => worker()));
     })();
-  }, [state?.thumbnailOffsetSeconds]);
+  }, [state?.thumbnailOffsetPercent]);
 
   const loadDirectory = useCallback(async (targetPath: string, forceRefresh = false) => {
     const normalized = normalizePath(targetPath);
@@ -1317,6 +1606,14 @@ function App() {
     }
   };
 
+  const closeSettings = useCallback(() => {
+    setShowSettings(false);
+    if (thumbnailReloadNeeded.current) {
+      thumbnailReloadNeeded.current = false;
+      void loadDirectory(currentPathRef.current);
+    }
+  }, [loadDirectory]);
+
   const persistPlaybackProgress = useCallback((remotePath: string, position: number, duration: number) => {
     void AppService.SavePlaybackProgress(remotePath, position, duration).catch(() => {
       // Progress persistence must never interrupt playback or closing the player.
@@ -1445,21 +1742,21 @@ function App() {
   const saveThumbnailSettings = async () => {
     const maxAgeDays = Number.parseInt(thumbnailMaxAgeInput, 10);
     const maxSizeMB = Number.parseInt(thumbnailMaxSizeInput, 10);
-    const offsetSeconds = Number.parseInt(thumbnailOffsetInput, 10);
+    const offsetPercent = Number.parseInt(thumbnailOffsetPercentInput, 10);
     setSettingsMessage("");
     setError("");
-    if (![maxAgeDays, maxSizeMB, offsetSeconds].every(Number.isFinite)) {
+    if (![maxAgeDays, maxSizeMB, offsetPercent].every(Number.isFinite)) {
       setError("请输入有效的缩略图缓存设置");
       return;
     }
     try {
-      const previousOffset = state?.thumbnailOffsetSeconds;
-      const nextState = await AppService.SetThumbnailSettings(maxAgeDays, maxSizeMB, offsetSeconds);
+      const previousOffset = state?.thumbnailOffsetPercent;
+      const nextState = await AppService.SetThumbnailSettings(maxAgeDays, maxSizeMB, offsetPercent);
       setState(nextState);
       setThumbnailMaxAgeInput(String(nextState.thumbnailMaxAgeDays));
       setThumbnailMaxSizeInput(String(nextState.thumbnailMaxSizeMB));
-      setThumbnailOffsetInput(String(nextState.thumbnailOffsetSeconds));
-      if (previousOffset !== nextState.thumbnailOffsetSeconds) {
+      setThumbnailOffsetPercentInput(String(nextState.thumbnailOffsetPercent));
+      if (previousOffset !== nextState.thumbnailOffsetPercent) {
         setThumbnailImages({});
         thumbnailReloadNeeded.current = true;
       }
@@ -1523,6 +1820,43 @@ function App() {
     }
   };
 
+  useEffect(() => {
+    if (!isAndroid) return;
+
+    const backWindow = window as Window & {
+      __drivePlayerHandleBack?: () => boolean;
+      __drivePlayerExitFullscreen?: () => boolean;
+    };
+    backWindow.__drivePlayerHandleBack = () => {
+      if (showLogoutConfirm) {
+        setShowLogoutConfirm(false);
+        return true;
+      }
+      if (backWindow.__drivePlayerExitFullscreen?.()) return true;
+      if (activeVideo) {
+        closeVideo();
+        return true;
+      }
+      if (loginProvider) {
+        setLoginProvider(null);
+        return true;
+      }
+      if (showSettings) {
+        closeSettings();
+        return true;
+      }
+      if (canGoBack) {
+        goBackDirectory();
+        return true;
+      }
+      return false;
+    };
+
+    return () => {
+      delete backWindow.__drivePlayerHandleBack;
+    };
+  }, [activeVideo, canGoBack, closeSettings, goBackDirectory, isAndroid, loginProvider, showLogoutConfirm, showSettings]);
+
   const pathParts = useMemo(() => breadcrumbs(currentPath), [currentPath]);
   const visibleEntries = useMemo(
     () => entries.filter((entry) => entry.isDirectory || isVideo(entry)),
@@ -1560,7 +1894,7 @@ function App() {
   const thumbnailSettingsChanged =
     Number.parseInt(thumbnailMaxAgeInput, 10) !== state.thumbnailMaxAgeDays ||
     Number.parseInt(thumbnailMaxSizeInput, 10) !== state.thumbnailMaxSizeMB ||
-    Number.parseInt(thumbnailOffsetInput, 10) !== state.thumbnailOffsetSeconds;
+    Number.parseInt(thumbnailOffsetPercentInput, 10) !== state.thumbnailOffsetPercent;
   const playbackProgressSettingsChanged =
     Number.parseInt(playbackMaxAgeInput, 10) !== state.playbackMaxAgeDays ||
     Number.parseInt(playbackMaxSizeInput, 10) !== state.playbackMaxSizeMB;
@@ -1568,7 +1902,7 @@ function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <div className="flex min-w-0 items-center gap-3">
+        <div className="flex w-full min-w-0 items-center gap-3 sm:w-auto">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <HardDrive className="size-5" />
           </div>
@@ -1579,33 +1913,30 @@ function App() {
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant={state.provider === "123" ? "secondary" : "outline"}
-            size="sm"
-            onClick={() => void switchProvider("123")}
+        <div className="grid w-full grid-cols-4 items-center gap-2 sm:flex sm:w-auto">
+          <Tabs
+            className="col-span-2 gap-0 sm:w-auto"
+            value={state.provider}
+            onValueChange={(provider) => {
+              if (provider === "123" || provider === "quark") {
+                void switchProvider(provider);
+              }
+            }}
           >
-            {state.connected123 ? "123 云盘" : "登录 123"}
-          </Button>
+            <TabsList className="grid w-full grid-cols-2 sm:w-auto" aria-label="网盘切换">
+              <TabsTrigger className="min-w-0 px-2 text-xs sm:px-2.5 sm:text-sm" value="123">
+                {state.connected123 ? "123 云盘" : "登录 123"}
+              </TabsTrigger>
+              <TabsTrigger className="min-w-0 px-2 text-xs sm:px-2.5 sm:text-sm" value="quark">
+                {state.connectedQuark ? "夸克网盘" : "登录夸克"}
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
           <Button
-            variant={state.provider === "quark" ? "secondary" : "outline"}
-            size="sm"
-            onClick={() => void switchProvider("quark")}
-          >
-            {state.connectedQuark ? "夸克网盘" : "登录夸克"}
-          </Button>
-          <Button
-            variant={showSettings ? "secondary" : "outline"}
+            className="min-w-0 px-2 text-xs sm:px-2.5 sm:text-sm"
+            variant="outline"
             size="sm"
             onClick={() => {
-              if (showSettings) {
-                setShowSettings(false);
-                if (thumbnailReloadNeeded.current) {
-                  thumbnailReloadNeeded.current = false;
-                  void loadDirectory(currentPath);
-                }
-                return;
-              }
               setShowSettings(true);
               setSettingsMessage("");
               void refreshProviderCaches();
@@ -1618,7 +1949,12 @@ function App() {
             <Settings />
             设置
           </Button>
-          <Button variant="outline" size="sm" onClick={() => void logout()}>
+          <Button
+            className="min-w-0 px-2 text-xs sm:px-2.5 sm:text-sm"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowLogoutConfirm(true)}
+          >
             <LogOut />
             退出当前
           </Button>
@@ -1627,12 +1963,12 @@ function App() {
 
       <Separator />
 
-      <main className="min-h-0 flex-1 overflow-hidden p-4 md:p-6">
-        {error && (
+      <main className="min-h-0 flex-1 overflow-hidden p-2 sm:p-4 md:p-6">
+        {error && !showSettings && (
           <Alert variant="destructive" className="mb-4">
             <CircleAlert className="size-4" />
             <AlertTitle>请求失败</AlertTitle>
-            <AlertDescription className="flex items-start justify-between gap-4">
+            <AlertDescription className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:gap-4">
               <span>{error}</span>
               <Button variant="ghost" size="sm" className="-my-1" onClick={() => setError("")}>
                 关闭
@@ -1641,9 +1977,8 @@ function App() {
           </Alert>
         )}
 
-        {!showSettings ? (
-          <Card className="flex h-full min-h-0 flex-col gap-0 py-0">
-              <CardHeader className="border-b py-3">
+        <Card className="flex h-full min-h-0 flex-col gap-0 py-0">
+              <CardHeader className="border-b px-3 py-3 sm:px-6">
                 <div className="flex min-w-0 items-center gap-2">
                   <Button
                     variant="outline"
@@ -1710,37 +2045,39 @@ function App() {
               </CardHeader>
 
               <CardContent className="flex min-h-0 flex-1 flex-col p-0">
-                <Table className="table-fixed">
-                  <colgroup>
-                    <col />
-                    <col className="w-32" />
-                    <col className="w-48" />
-                  </colgroup>
-                  <TableHeader>
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead>名称</TableHead>
-                      <TableHead>大小</TableHead>
-                      <TableHead>修改时间</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                </Table>
-                <ScrollArea viewportRef={directoryScrollViewportRef} className="min-h-0 flex-1">
+                {!isMobile && (
                   <Table className="table-fixed">
                     <colgroup>
                       <col />
                       <col className="w-32" />
                       <col className="w-48" />
                     </colgroup>
+                    <TableHeader>
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead>名称</TableHead>
+                        <TableHead>大小</TableHead>
+                        <TableHead>修改时间</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                  </Table>
+                )}
+                <ScrollArea viewportRef={directoryScrollViewportRef} className="min-h-0 flex-1">
+                  <Table className="table-fixed">
+                    <colgroup>
+                      <col />
+                      {!isMobile && <col className="w-32" />}
+                      {!isMobile && <col className="w-48" />}
+                    </colgroup>
                     <TableBody>
                       {loading ? (
                         <TableRow className="hover:bg-transparent">
-                          <TableCell colSpan={3} className="h-40 text-center text-muted-foreground">
+                          <TableCell colSpan={isMobile ? 1 : 3} className="h-40 text-center text-muted-foreground">
                             <LoaderCircle className="mx-auto size-5 animate-spin" />
                           </TableCell>
                         </TableRow>
                       ) : visibleEntries.length === 0 ? (
                         <TableRow className="hover:bg-transparent">
-                          <TableCell colSpan={3} className="h-40 text-center text-muted-foreground">
+                          <TableCell colSpan={isMobile ? 1 : 3} className="h-40 text-center text-muted-foreground">
                             当前目录为空
                           </TableCell>
                         </TableRow>
@@ -1753,8 +2090,8 @@ function App() {
                               onClick={() => void openEntry(entry)}
                             >
                               <TableCell>
-                                <div className="flex min-w-0 items-center gap-3">
-                                  <div className="flex h-14 w-24 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted">
+                                <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+                                  <div className="flex h-12 w-20 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted sm:h-14 sm:w-24">
                                     {entry.isDirectory ? (
                                       <Folder className="size-8" />
                                     ) : thumbnailImages[entry.path] ? (
@@ -1767,15 +2104,25 @@ function App() {
                                       <Play className="size-4" />
                                     )}
                                   </div>
-                                  <div className="min-w-0">
+                                  <div className="min-w-0 flex-1">
                                     <div className="truncate font-medium">{entry.name}</div>
+                                    {isMobile && (
+                                      <div className="mt-1 flex min-w-0 items-center justify-between gap-3 text-xs text-muted-foreground">
+                                        <span>{entry.isDirectory ? "文件夹" : formatSize(entry.size)}</span>
+                                        <span className="shrink-0">{formatDate(entry.modifiedAt)}</span>
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               </TableCell>
-                              <TableCell className="text-muted-foreground">
-                                {entry.isDirectory ? "—" : formatSize(entry.size)}
-                              </TableCell>
-                              <TableCell className="text-muted-foreground">{formatDate(entry.modifiedAt)}</TableCell>
+                              {!isMobile && (
+                                <TableCell className="text-muted-foreground">
+                                  {entry.isDirectory ? "—" : formatSize(entry.size)}
+                                </TableCell>
+                              )}
+                              {!isMobile && (
+                                <TableCell className="text-muted-foreground">{formatDate(entry.modifiedAt)}</TableCell>
+                              )}
                             </TableRow>
                           );
                         })
@@ -1784,10 +2131,58 @@ function App() {
                   </Table>
                 </ScrollArea>
               </CardContent>
-          </Card>
-        ) : (
-          <div className="h-full overflow-auto p-px">
-            <div className="mx-auto grid w-full max-w-3xl gap-4">
+        </Card>
+      </main>
+
+      <AlertDialog open={showLogoutConfirm} onOpenChange={setShowLogoutConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              退出{state.provider === "quark" ? "夸克网盘" : "123 云盘"}？
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              将退出当前账号并清除该网盘的本次浏览状态。另一个已登录网盘不会受影响。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setShowLogoutConfirm(false);
+                void logout();
+              }}
+            >
+              退出
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog
+        open={showSettings}
+        onOpenChange={(open) => {
+          if (!open) closeSettings();
+        }}
+      >
+        <DialogContent className="flex h-dvh w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none p-0 sm:h-[90vh] sm:w-[92vw] sm:max-w-4xl sm:rounded-xl">
+          <DialogHeader className="shrink-0 border-b px-4 py-4 sm:px-6">
+            <DialogTitle className="pr-8">设置</DialogTitle>
+          </DialogHeader>
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="mx-auto grid w-full max-w-3xl gap-3 p-3 sm:gap-4 sm:p-6">
+              {error && (
+                <Alert variant="destructive">
+                  <CircleAlert className="size-4" />
+                  <AlertTitle>请求失败</AlertTitle>
+                  <AlertDescription className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:gap-4">
+                    <span>{error}</span>
+                    <Button variant="ghost" size="sm" className="-my-1" onClick={() => setError("")}>
+                      关闭
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              )}
               {settingsMessage && (
                 <Alert>
                   <RotateCcw className="size-4" />
@@ -1847,7 +2242,7 @@ function App() {
 
               <Card>
                 <CardHeader>
-                  <div className="flex items-start justify-between gap-4">
+                  <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:gap-4">
                     <div className="space-y-1.5">
                       <CardTitle>123 云盘</CardTitle>
                       <CardDescription>123 的浏览状态、WebDAV 连接与 GET 302 Location 缓存。</CardDescription>
@@ -1944,7 +2339,7 @@ function App() {
 
               <Card>
                 <CardHeader>
-                  <div className="flex items-start justify-between gap-4">
+                  <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:gap-4">
                     <div className="space-y-1.5">
                       <CardTitle>夸克网盘</CardTitle>
                       <CardDescription>夸克的浏览状态、下载 URL / Cookie、文件大小以及路径 FID 缓存。</CardDescription>
@@ -2114,14 +2509,14 @@ function App() {
                       />
                     </div>
                     <div className="grid gap-2">
-                      <Label htmlFor="thumbnail-offset">缩略图偏移（秒）</Label>
+                      <Label htmlFor="thumbnail-offset">缩略图偏移（%）</Label>
                       <Input
                         id="thumbnail-offset"
                         type="number"
                         min={0}
-                        max={3600}
-                        value={thumbnailOffsetInput}
-                        onChange={(event) => setThumbnailOffsetInput(event.target.value)}
+                        max={100}
+                        value={thumbnailOffsetPercentInput}
+                        onChange={(event) => setThumbnailOffsetPercentInput(event.target.value)}
                       />
                     </div>
                   </div>
@@ -2215,15 +2610,17 @@ function App() {
 
               <Card>
                 <CardHeader>
-                  <div className="flex items-start justify-between gap-4">
+                  <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:gap-4">
                     <div className="space-y-1.5">
                       <CardTitle>本地存储</CardTitle>
                       <CardDescription>应用配置、视频缩略图和播放进度都保存在这个应用数据目录下。</CardDescription>
                     </div>
-                    <Button variant="outline" size="sm" onClick={() => void openStorageDirectory()}>
-                      <FolderOpen />
-                      打开目录
-                    </Button>
+                    {!isMobile && (
+                      <Button variant="outline" size="sm" onClick={() => void openStorageDirectory()}>
+                        <FolderOpen />
+                        打开目录
+                      </Button>
+                    )}
                   </div>
                 </CardHeader>
                 <CardContent className="grid gap-4 text-sm">
@@ -2247,9 +2644,9 @@ function App() {
               </Card>
 
             </div>
-          </div>
-        )}
-      </main>
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
 
       {loginProvider && (
         <AccountLoginDialog
@@ -2274,8 +2671,12 @@ function App() {
           if (!open) closeVideo();
         }}
       >
-        <DialogContent className="flex h-[90vh] w-[95vw] max-w-[95vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[95vw]">
-          <DialogHeader className="border-b px-5 py-4">
+        <DialogContent
+          className={isAndroid
+            ? "flex h-dvh w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none p-0 sm:max-w-none"
+            : "flex h-dvh w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none p-0 sm:h-[90vh] sm:w-[95vw] sm:max-w-[95vw] sm:rounded-xl"}
+        >
+          <DialogHeader className="border-b px-3 py-3 sm:px-5 sm:py-4">
             <DialogTitle className="truncate pr-8">{activeVideo?.name ?? "视频播放"}</DialogTitle>
             <DialogDescription className="truncate font-mono text-xs">
               {activeVideo?.path}
@@ -2287,6 +2688,7 @@ function App() {
                 key={activeVideo.url}
                 src={activeVideo.url}
                 initialPosition={activeVideo.resumePosition}
+                isAndroid={isAndroid}
                 onPersistProgress={(position, duration) => {
                   persistPlaybackProgress(activeVideo.path, position, duration);
                 }}

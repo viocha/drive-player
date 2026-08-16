@@ -115,6 +115,32 @@ public class WailsJSBridge {
         return BuildConfig.DEBUG;
     }
 
+    /** Native controls used directly by the React video player. */
+    @JavascriptInterface
+    public boolean playerEnsureBrightnessAccess() {
+        return bridge.ensureSystemBrightnessAccess();
+    }
+
+    @JavascriptInterface
+    public void playerSetBrightness(int percent) {
+        bridge.setBrightness(percent);
+    }
+
+    @JavascriptInterface
+    public String playerGetBrightness() {
+        return bridge.getBrightnessJson();
+    }
+
+    @JavascriptInterface
+    public String playerGetSystemBarInsets() {
+        return bridge.getSafeAreaJson();
+    }
+
+    @JavascriptInterface
+    public void playerSetFullscreen(boolean fullscreen, boolean portrait) {
+        bridge.setPlayerFullscreen(fullscreen, portrait);
+    }
+
     /**
      * Send a callback response to JavaScript
      */

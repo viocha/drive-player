@@ -532,15 +532,57 @@ public class WailsBridge {
     }
 
     /**
-     * Set window brightness, 0-100. A negative value restores the system default.
+     * Return whether this app may write Android system settings. On Android 6+
+     * WRITE_SETTINGS is a special access grant rather than a normal runtime
+     * permission, so the user must enable it from the system settings screen.
+     */
+    public boolean ensureSystemBrightnessAccess() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.System.canWrite(activity)) {
+            return true;
+        }
+
+        mainHandler.post(() -> {
+            try {
+                Intent intent = new Intent(
+                        Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                        Uri.parse("package:" + activity.getPackageName()));
+                activity.startActivity(intent);
+            } catch (Exception e) {
+                Log.e(TAG, "Unable to open WRITE_SETTINGS access screen", e);
+            }
+        });
+        return false;
+    }
+
+    /**
+     * Set the device-wide system brightness in 5-percent steps. This deliberately
+     * writes Settings.System.SCREEN_BRIGHTNESS instead of applying a per-window
+     * brightness override, so the change remains visible outside this app too.
      */
     public void setBrightness(final int pct) {
         mainHandler.post(() -> {
             try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                        && !Settings.System.canWrite(activity)) {
+                    return;
+                }
+
+                int percent = Math.max(5, Math.min(100, Math.round(pct / 5f) * 5));
+                int brightness = Math.round(percent * 255f / 100f);
+
+                // Ensure an old per-window override cannot mask the system value.
                 WindowManager.LayoutParams lp = activity.getWindow().getAttributes();
-                lp.screenBrightness = pct < 0 ? WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-                                              : Math.max(0.01f, Math.min(1f, pct / 100f));
+                lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
                 activity.getWindow().setAttributes(lp);
+
+                Settings.System.putInt(
+                        activity.getContentResolver(),
+                        Settings.System.SCREEN_BRIGHTNESS_MODE,
+                        Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
+                Settings.System.putInt(
+                        activity.getContentResolver(),
+                        Settings.System.SCREEN_BRIGHTNESS,
+                        brightness);
             } catch (Exception e) {
                 Log.e(TAG, "setBrightness failed", e);
             }
@@ -548,20 +590,69 @@ public class WailsBridge {
     }
 
     /**
-     * Current brightness as {"value": 0.0-1.0}. Falls back to the system
-     * brightness setting when the window has not overridden it.
+     * Enter/leave the video player's immersive fullscreen mode. Landscape is
+     * the default; portrait is used only when the video's height exceeds its
+     * width.
      */
+    public void setPlayerFullscreen(final boolean fullscreen, final boolean portrait) {
+        mainHandler.post(() -> {
+            try {
+                activity.setRequestedOrientation(fullscreen
+                        ? (portrait
+                            ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                            : ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
+                        : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+
+                if (activity instanceof MainActivity) {
+                    ((MainActivity) activity).setPlayerImmersiveFullscreen(fullscreen);
+                    return;
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    WindowInsetsController controller = activity.getWindow().getInsetsController();
+                    if (controller != null) {
+                        if (fullscreen) {
+                            controller.setSystemBarsBehavior(
+                                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                            controller.hide(WindowInsets.Type.systemBars());
+                        } else {
+                            controller.show(WindowInsets.Type.systemBars());
+                        }
+                    }
+                } else {
+                    View decorView = activity.getWindow().getDecorView();
+                    int visibility = decorView.getSystemUiVisibility();
+                    if (fullscreen) {
+                        visibility |= View.SYSTEM_UI_FLAG_FULLSCREEN
+                                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                    } else {
+                        visibility &= ~View.SYSTEM_UI_FLAG_FULLSCREEN;
+                        visibility &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+                        visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                    }
+                    decorView.setSystemUiVisibility(visibility);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "setPlayerFullscreen failed", e);
+            }
+        });
+    }
+
+    /** Current device-wide brightness as {"value":0.0-1.0,"writable":bool}. */
     public String getBrightnessJson() {
         try {
-            float v = activity.getWindow().getAttributes().screenBrightness;
-            if (v < 0) {
-                int sys = Settings.System.getInt(activity.getContentResolver(),
-                        Settings.System.SCREEN_BRIGHTNESS, 128);
-                v = sys / 255f;
-            }
-            return new JSONObject().put("value", v).toString();
+            int sys = Settings.System.getInt(activity.getContentResolver(),
+                    Settings.System.SCREEN_BRIGHTNESS, 128);
+            float v = Math.max(0f, Math.min(1f, sys / 255f));
+            boolean writable = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+                    || Settings.System.canWrite(activity);
+            return new JSONObject()
+                    .put("value", v)
+                    .put("writable", writable)
+                    .toString();
         } catch (Exception e) {
-            return "{\"value\":-1}";
+            return "{\"value\":-1,\"writable\":false}";
         }
     }
 

@@ -257,7 +257,7 @@ func isThumbnailCacheFile(name string) bool {
 	return ext == ".webp" || ext == ".jpg" || ext == ".png"
 }
 
-func thumbnailCacheKey(username, remotePath, modifiedAt string, offsetSeconds int) string {
-	source := strings.Join([]string{strings.TrimSpace(username), normalizeRemotePath(remotePath), strings.TrimSpace(modifiedAt), fmt.Sprintf("offset=%d", offsetSeconds)}, "\n")
+func thumbnailCacheKey(username, remotePath, modifiedAt string, offsetPercent int) string {
+	source := strings.Join([]string{strings.TrimSpace(username), normalizeRemotePath(remotePath), strings.TrimSpace(modifiedAt), fmt.Sprintf("offsetPercent=%d", offsetPercent)}, "\n")
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(source)))
 }

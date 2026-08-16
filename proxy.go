@@ -156,6 +156,7 @@ func (p *WebDAVProxy) CacheEntries() []RedirectCacheEntry {
 }
 
 func (p *WebDAVProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if !strings.HasPrefix(r.URL.Path, "/webdav") {
 		http.NotFound(w, r)
 		return

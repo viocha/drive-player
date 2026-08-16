@@ -97,8 +97,8 @@ export function SetQuarkIDCacheTTL(minutes: number): $CancellablePromise<$models
     return $Call.ByID(3209867527, minutes);
 }
 
-export function SetThumbnailSettings(maxAgeDays: number, maxSizeMB: number, offsetSeconds: number): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(99162039, maxAgeDays, maxSizeMB, offsetSeconds);
+export function SetThumbnailSettings(maxAgeDays: number, maxSizeMB: number, offsetPercent: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(99162039, maxAgeDays, maxSizeMB, offsetPercent);
 }
 
 export function SetWebDAVCacheTTL(minutes: number): $CancellablePromise<$models.AppState> {

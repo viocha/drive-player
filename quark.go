@@ -576,6 +576,7 @@ func (q *QuarkDrive) deleteDownload(remotePath string) {
 }
 
 func (q *QuarkDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if !strings.HasPrefix(r.URL.Path, "/quark") {
 		http.NotFound(w, r)
 		return

@@ -153,3 +153,23 @@ func TestWebDAVProxyAllowsCredentialFreeLocalAccess(t *testing.T) {
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
 }
+
+func TestWebDAVProxyAddsCORSToErrors(t *testing.T) {
+	proxy, err := NewWebDAVProxy("https://example.invalid/webdav", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	resp, err := http.Get(proxy.URLForPath("/video.mp4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want *", got)
+	}
+}

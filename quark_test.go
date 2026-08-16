@@ -248,6 +248,26 @@ func TestQuarkProxyCancellationPropagatesUpstream(t *testing.T) {
 	}
 }
 
+func TestQuarkProxyAddsCORSToErrors(t *testing.T) {
+	quark, err := NewQuarkDrive(time.Minute, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer quark.Close()
+
+	resp, err := http.Get(quark.URLForPath("/video.mp4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want *", got)
+	}
+}
+
 func TestParseSingleByteRange(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

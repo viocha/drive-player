@@ -38,7 +38,7 @@ func newDualAccountTestService(t *testing.T) *AppService {
 		QuarkIDCacheTTLMinutes:       defaultQuarkIDCacheTTL,
 		ThumbnailMaxAgeDays:          defaultThumbnailMaxAgeDays,
 		ThumbnailMaxSizeMB:           defaultThumbnailMaxSizeMB,
-		ThumbnailOffsetSeconds:       defaultThumbnailOffsetSeconds,
+		ThumbnailOffsetPercent:       defaultThumbnailOffsetPercent,
 		PlaybackMaxAgeDays:           defaultPlaybackMaxAgeDays,
 		PlaybackMaxSizeMB:            defaultPlaybackMaxSizeMB,
 		Username:                     "webdav-user",

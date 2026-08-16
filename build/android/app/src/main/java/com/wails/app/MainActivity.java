@@ -18,10 +18,13 @@ import android.os.PowerManager;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.util.Base64;
 import android.util.Log;
+import android.view.View;
+import android.view.WindowManager;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -29,8 +32,14 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
 import androidx.annotation.Nullable;
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.FileProvider;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.webkit.WebViewAssetLoader;
 
 import org.json.JSONObject;
@@ -56,7 +65,10 @@ public class MainActivity extends AppCompatActivity {
     private static final int FILE_PICKER_REQUEST = 7001;
 
     private WebView webView;
+    private View mainContainer;
     private WailsBridge bridge;
+    private OnBackPressedCallback appBackCallback;
+    private boolean playerImmersiveFullscreen = false;
     // Battery: system-event receivers are registered only while the activity is
     // in the foreground (onStart) and torn down in onStop, so background battery/
     // network/screen broadcasts don't wake the app.
@@ -83,7 +95,29 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Android 15 enforces edge-to-edge for targetSdk 35. Keep owning the
+        // full window, but inset the WebView host by the real system-bar and
+        // display-cutout sizes so application content is never covered by the
+        // status bar, gesture area, or a device cutout.
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         setContentView(R.layout.activity_main);
+        appBackCallback = new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                dispatchBackToWebView();
+            }
+        };
+        getOnBackPressedDispatcher().addCallback(this, appBackCallback);
+        mainContainer = findViewById(R.id.main_container);
+        ViewCompat.setOnApplyWindowInsetsListener(mainContainer, (view, windowInsets) -> {
+            Insets insets = playerImmersiveFullscreen
+                    ? Insets.NONE
+                    : windowInsets.getInsets(
+                            WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+            view.setPadding(insets.left, insets.top, insets.right, insets.bottom);
+            return windowInsets;
+        });
+        ViewCompat.requestApplyInsets(mainContainer);
 
         // Initialize the native Go library
         bridge = new WailsBridge(this);
@@ -94,6 +128,41 @@ public class MainActivity extends AppCompatActivity {
 
         // Load the application
         loadApplication();
+    }
+
+    /**
+     * Switch the WebView host between normal safe-area layout and real video
+     * immersive fullscreen. In fullscreen the WebView itself must occupy the
+     * entire window; merely hiding the system bars would leave the safe-area
+     * padding applied by the normal application layout in place.
+     */
+    void setPlayerImmersiveFullscreen(boolean fullscreen) {
+        playerImmersiveFullscreen = fullscreen;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            WindowManager.LayoutParams attributes = getWindow().getAttributes();
+            attributes.layoutInDisplayCutoutMode = fullscreen
+                    ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+            getWindow().setAttributes(attributes);
+        }
+
+        WindowInsetsControllerCompat controller =
+                WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        controller.setSystemBarsBehavior(
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        if (fullscreen) {
+            controller.hide(WindowInsetsCompat.Type.systemBars());
+            if (mainContainer != null) {
+                mainContainer.setPadding(0, 0, 0, 0);
+            }
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars());
+        }
+
+        if (mainContainer != null) {
+            ViewCompat.requestApplyInsets(mainContainer);
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -109,7 +178,11 @@ public class MainActivity extends AppCompatActivity {
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        // Drive Player serves authenticated media through a Go HTTP proxy bound
+        // exclusively to 127.0.0.1. The Wails shell itself uses the secure
+        // https://wails.localhost origin, so Android WebView otherwise blocks
+        // those local video requests as mixed content.
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
 
         // Enable debugging in debug builds
         if (DEBUG) {
@@ -188,6 +261,18 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 if (DEBUG) Log.d(TAG, "Page loaded: " + url);
+                // The application shell is light by default. The launch theme
+                // uses a dark splash, so only switch the system-bar surfaces
+                // and icons to the light application chrome once the web UI is
+                // actually visible. The container background also fills the
+                // inset areas around the WebView.
+                mainContainer.setBackgroundColor(Color.WHITE);
+                getWindow().setStatusBarColor(Color.WHITE);
+                getWindow().setNavigationBarColor(Color.WHITE);
+                WindowInsetsControllerCompat insetsController =
+                        WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+                insetsController.setAppearanceLightStatusBars(true);
+                insetsController.setAppearanceLightNavigationBars(true);
                 bridge.onPageFinished(url);
                 // Now that JS listeners are mounted, push a snapshot of the
                 // current battery / network / theme so the UI starts populated.
@@ -810,12 +895,32 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    @Override
-    public void onBackPressed() {
-        if (webView != null && webView.canGoBack()) {
-            webView.goBack();
-        } else {
-            super.onBackPressed();
+    private void dispatchBackToWebView() {
+        if (webView == null) {
+            performDefaultBack();
+            return;
+        }
+
+        // Give the React application first chance to close the video/login
+        // dialog, leave settings, or navigate its own directory history.
+        // evaluateJavascript returns the boolean result synchronously through
+        // this callback; false means there is no in-app navigation left.
+        webView.evaluateJavascript(
+                "(function(){try{return window.__drivePlayerHandleBack ? window.__drivePlayerHandleBack() === true : false;}catch(e){return false;}})()",
+                result -> {
+                    if (!"true".equals(result)) {
+                        runOnUiThread(this::performDefaultBack);
+                    }
+                });
+    }
+
+    private void performDefaultBack() {
+        if (appBackCallback != null) {
+            appBackCallback.setEnabled(false);
+        }
+        getOnBackPressedDispatcher().onBackPressed();
+        if (appBackCallback != null) {
+            appBackCallback.setEnabled(true);
         }
     }
 }

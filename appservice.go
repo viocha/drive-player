@@ -28,15 +28,15 @@ const (
 	defaultQuarkIDCacheTTL        = 30
 	defaultThumbnailMaxAgeDays    = 30
 	defaultThumbnailMaxSizeMB     = 512
-	defaultThumbnailOffsetSeconds = 5
+	defaultThumbnailOffsetPercent = 5
 	defaultPlaybackMaxAgeDays     = 365
 	defaultPlaybackMaxSizeMB      = 16
 	minThumbnailMaxAgeDays        = 1
 	maxThumbnailMaxAgeDays        = 3650
 	minThumbnailMaxSizeMB         = 16
 	maxThumbnailMaxSizeMB         = 10240
-	minThumbnailOffsetSeconds     = 0
-	maxThumbnailOffsetSeconds     = 3600
+	minThumbnailOffsetPercent     = 0
+	maxThumbnailOffsetPercent     = 100
 	minPlaybackMaxAgeDays         = 1
 	maxPlaybackMaxAgeDays         = 3650
 	minPlaybackMaxSizeMB          = 1
@@ -62,7 +62,7 @@ type AppState struct {
 	QuarkIDCacheTTLMinutes       int    `json:"quarkIDCacheTTLMinutes"`
 	ThumbnailMaxAgeDays          int    `json:"thumbnailMaxAgeDays"`
 	ThumbnailMaxSizeMB           int    `json:"thumbnailMaxSizeMB"`
-	ThumbnailOffsetSeconds       int    `json:"thumbnailOffsetSeconds"`
+	ThumbnailOffsetPercent       int    `json:"thumbnailOffsetPercent"`
 	PlaybackMaxAgeDays           int    `json:"playbackMaxAgeDays"`
 	PlaybackMaxSizeMB            int    `json:"playbackMaxSizeMB"`
 	StorageDirectory             string `json:"storageDirectory"`
@@ -89,7 +89,7 @@ type diskConfig struct {
 	QuarkIDCacheTTLMinutes       int    `json:"quarkIDCacheTTLMinutes"`
 	ThumbnailMaxAgeDays          int    `json:"thumbnailMaxAgeDays"`
 	ThumbnailMaxSizeMB           int    `json:"thumbnailMaxSizeMB"`
-	ThumbnailOffsetSeconds       int    `json:"thumbnailOffsetSeconds"`
+	ThumbnailOffsetPercent       int    `json:"thumbnailOffsetPercent"`
 	PlaybackMaxAgeDays           int    `json:"playbackMaxAgeDays"`
 	PlaybackMaxSizeMB            int    `json:"playbackMaxSizeMB"`
 	Username                     string `json:"username"`
@@ -131,7 +131,7 @@ func NewAppService() (*AppService, error) {
 		QuarkIDCacheTTLMinutes:       defaultQuarkIDCacheTTL,
 		ThumbnailMaxAgeDays:          defaultThumbnailMaxAgeDays,
 		ThumbnailMaxSizeMB:           defaultThumbnailMaxSizeMB,
-		ThumbnailOffsetSeconds:       defaultThumbnailOffsetSeconds,
+		ThumbnailOffsetPercent:       defaultThumbnailOffsetPercent,
 		PlaybackMaxAgeDays:           defaultPlaybackMaxAgeDays,
 		PlaybackMaxSizeMB:            defaultPlaybackMaxSizeMB,
 		Provider:                     provider123,
@@ -154,8 +154,8 @@ func NewAppService() (*AppService, error) {
 	if config.ThumbnailMaxSizeMB < minThumbnailMaxSizeMB || config.ThumbnailMaxSizeMB > maxThumbnailMaxSizeMB {
 		config.ThumbnailMaxSizeMB = defaultThumbnailMaxSizeMB
 	}
-	if config.ThumbnailOffsetSeconds < minThumbnailOffsetSeconds || config.ThumbnailOffsetSeconds > maxThumbnailOffsetSeconds {
-		config.ThumbnailOffsetSeconds = defaultThumbnailOffsetSeconds
+	if config.ThumbnailOffsetPercent < minThumbnailOffsetPercent || config.ThumbnailOffsetPercent > maxThumbnailOffsetPercent {
+		config.ThumbnailOffsetPercent = defaultThumbnailOffsetPercent
 	}
 	if config.PlaybackMaxAgeDays < minPlaybackMaxAgeDays || config.PlaybackMaxAgeDays > maxPlaybackMaxAgeDays {
 		config.PlaybackMaxAgeDays = defaultPlaybackMaxAgeDays
@@ -214,7 +214,7 @@ func NewAppService() (*AppService, error) {
 }
 
 func resolveConfigPath() (string, error) {
-	base, err := os.UserConfigDir()
+	base, err := resolveAppDataDirectory()
 	if err != nil {
 		return "", fmt.Errorf("resolve config directory: %w", err)
 	}
@@ -257,7 +257,7 @@ func (s *AppService) GetState() AppState {
 		QuarkIDCacheTTLMinutes:       s.config.QuarkIDCacheTTLMinutes,
 		ThumbnailMaxAgeDays:          s.config.ThumbnailMaxAgeDays,
 		ThumbnailMaxSizeMB:           s.config.ThumbnailMaxSizeMB,
-		ThumbnailOffsetSeconds:       s.config.ThumbnailOffsetSeconds,
+		ThumbnailOffsetPercent:       s.config.ThumbnailOffsetPercent,
 		PlaybackMaxAgeDays:           s.config.PlaybackMaxAgeDays,
 		PlaybackMaxSizeMB:            s.config.PlaybackMaxSizeMB,
 		StorageDirectory:             storageDirectory,
@@ -536,9 +536,9 @@ func (s *AppService) GetThumbnail(remotePath, modifiedAt string) (ThumbnailResul
 		return ThumbnailResult{}, err
 	}
 	s.mu.RLock()
-	offsetSeconds := s.config.ThumbnailOffsetSeconds
+	offsetPercent := s.config.ThumbnailOffsetPercent
 	s.mu.RUnlock()
-	return s.thumbnails.Get(thumbnailCacheKey(accountKey, remotePath, modifiedAt, offsetSeconds))
+	return s.thumbnails.Get(thumbnailCacheKey(accountKey, remotePath, modifiedAt, offsetPercent))
 }
 
 func (s *AppService) SaveThumbnail(remotePath, modifiedAt, dataURL string) (ThumbnailCacheStats, error) {
@@ -547,9 +547,9 @@ func (s *AppService) SaveThumbnail(remotePath, modifiedAt, dataURL string) (Thum
 		return ThumbnailCacheStats{}, err
 	}
 	s.mu.RLock()
-	offsetSeconds := s.config.ThumbnailOffsetSeconds
+	offsetPercent := s.config.ThumbnailOffsetPercent
 	s.mu.RUnlock()
-	return s.thumbnails.Save(thumbnailCacheKey(accountKey, remotePath, modifiedAt, offsetSeconds), dataURL)
+	return s.thumbnails.Save(thumbnailCacheKey(accountKey, remotePath, modifiedAt, offsetPercent), dataURL)
 }
 
 func (s *AppService) GetThumbnailCacheStats() (ThumbnailCacheStats, error) {
@@ -560,22 +560,22 @@ func (s *AppService) ClearThumbnailCache() (ThumbnailCacheStats, error) {
 	return s.thumbnails.Clear()
 }
 
-func (s *AppService) SetThumbnailSettings(maxAgeDays, maxSizeMB, offsetSeconds int) (AppState, error) {
+func (s *AppService) SetThumbnailSettings(maxAgeDays, maxSizeMB, offsetPercent int) (AppState, error) {
 	if maxAgeDays < minThumbnailMaxAgeDays || maxAgeDays > maxThumbnailMaxAgeDays {
 		return AppState{}, fmt.Errorf("缩略图保留时间必须在 %d 到 %d 天之间", minThumbnailMaxAgeDays, maxThumbnailMaxAgeDays)
 	}
 	if maxSizeMB < minThumbnailMaxSizeMB || maxSizeMB > maxThumbnailMaxSizeMB {
 		return AppState{}, fmt.Errorf("缩略图缓存上限必须在 %d 到 %d MB 之间", minThumbnailMaxSizeMB, maxThumbnailMaxSizeMB)
 	}
-	if offsetSeconds < minThumbnailOffsetSeconds || offsetSeconds > maxThumbnailOffsetSeconds {
-		return AppState{}, fmt.Errorf("缩略图截帧位置必须在 %d 到 %d 秒之间", minThumbnailOffsetSeconds, maxThumbnailOffsetSeconds)
+	if offsetPercent < minThumbnailOffsetPercent || offsetPercent > maxThumbnailOffsetPercent {
+		return AppState{}, fmt.Errorf("缩略图截帧位置必须在 %d%% 到 %d%% 之间", minThumbnailOffsetPercent, maxThumbnailOffsetPercent)
 	}
 
 	s.mu.Lock()
 	previous := s.config
 	s.config.ThumbnailMaxAgeDays = maxAgeDays
 	s.config.ThumbnailMaxSizeMB = maxSizeMB
-	s.config.ThumbnailOffsetSeconds = offsetSeconds
+	s.config.ThumbnailOffsetPercent = offsetPercent
 	config := s.config
 	s.mu.Unlock()
 

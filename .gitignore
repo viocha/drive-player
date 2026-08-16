@@ -1,12 +1,36 @@
-.task
-bin
-frontend/dist
-frontend/node_modules
+# Build outputs and tool state
+.task/
+bin/
+*.syso
+
+# Frontend generated files
+frontend/dist/
+frontend/node_modules/
+
+# Local debug captures
 debug-window*.png
-build/linux/appimage/build
+
+# Desktop packaging outputs
+build/linux/appimage/build/
 build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+
 # Mobile generated (per-machine; overlays hold absolute paths)
 build/ios/xcode/overlay.json
 build/ios/xcode/gen/
 build/android/overlay.json
 build/android/gen/
+
+# Android / Gradle generated files
+build/android/.gradle/
+build/android/.idea/
+build/android/*.iml
+build/android/app/*.iml
+build/android/local.properties
+build/android/build/
+build/android/app/build/
+build/android/app/.cxx/
+build/android/app/src/main/jniLibs/*/libwails.so
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

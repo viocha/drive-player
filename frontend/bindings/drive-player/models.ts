@@ -16,7 +16,7 @@ export interface AppState {
     "quarkIDCacheTTLMinutes": number;
     "thumbnailMaxAgeDays": number;
     "thumbnailMaxSizeMB": number;
-    "thumbnailOffsetSeconds": number;
+    "thumbnailOffsetPercent": number;
     "playbackMaxAgeDays": number;
     "playbackMaxSizeMB": number;
     "storageDirectory": string;

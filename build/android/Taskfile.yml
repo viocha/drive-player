@@ -8,23 +8,17 @@ vars:
   MIN_SDK: '21'
   TARGET_SDK: '35'
   # The emulator runs the host architecture; physical devices are arm64
-  HOST_ARCH:
-    sh: '[ "$(uname -m)" = "x86_64" ] && echo "amd64" || echo "arm64"'
+  HOST_ARCH: '{{ARCH}}'
   # System-image ABI for the host, used in the "create an AVD" hint below.
-  ANDROID_ABI:
-    sh: '[ "$(uname -m)" = "arm64" ] && echo "arm64-v8a" || echo "x86_64"'
+  ANDROID_ABI: '{{if eq ARCH "arm64"}}arm64-v8a{{else}}x86_64{{end}}'
   # SDK location: $ANDROID_HOME / $ANDROID_SDK_ROOT, else the per-OS default
-  # (macOS: ~/Library/Android/sdk, Linux/other: ~/Android/Sdk)
-  SDK_ROOT:
-    sh: 'echo "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$([ -d "$HOME/Library/Android/sdk" ] && echo "$HOME/Library/Android/sdk" || echo "$HOME/Android/Sdk")}}"'
-  ADB:
-    sh: 'command -v adb || echo "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$([ -d "$HOME/Library/Android/sdk" ] && echo "$HOME/Library/Android/sdk" || echo "$HOME/Android/Sdk")}}/platform-tools/adb"'
-  EMULATOR:
-    sh: 'command -v emulator || echo "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$([ -d "$HOME/Library/Android/sdk" ] && echo "$HOME/Library/Android/sdk" || echo "$HOME/Android/Sdk")}}/emulator/emulator"'
+  # (Windows: ANDROID_HOME should be set by Android Studio; macOS/Linux use defaults)
+  SDK_ROOT: '{{if .ANDROID_HOME}}{{.ANDROID_HOME}}{{else if .ANDROID_SDK_ROOT}}{{.ANDROID_SDK_ROOT}}{{else if eq OS "darwin"}}{{.HOME}}/Library/Android/sdk{{else}}{{.HOME}}/Android/Sdk{{end}}'
+  ADB: '{{.SDK_ROOT}}/platform-tools/adb{{if eq OS "windows"}}.exe{{end}}'
+  EMULATOR: '{{.SDK_ROOT}}/emulator/emulator{{if eq OS "windows"}}.exe{{end}}'
   # avdmanager lives under cmdline-tools/<version>/bin; used to auto-create an
   # AVD when none exists (mirrors the iOS `ensure-simulator` auto-create flow).
-  AVDMANAGER:
-    sh: 'command -v avdmanager || ls "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$([ -d "$HOME/Library/Android/sdk" ] && echo "$HOME/Library/Android/sdk" || echo "$HOME/Android/Sdk")}}"/cmdline-tools/*/bin/avdmanager 2>/dev/null | sort -V | tail -1 || true'
+  AVDMANAGER: '{{.SDK_ROOT}}/cmdline-tools/latest/bin/avdmanager{{if eq OS "windows"}}.bat{{end}}'
 
 tasks:
   install:deps:
@@ -42,8 +36,12 @@ tasks:
       - task: generate:android:overlay
       - task: common:build:frontend
         vars:
-          BUILD_FLAGS:
-            ref: .BUILD_FLAGS
+          # TypeScript bindings are platform-neutral. Generating them with
+          # Android build tags from a Windows host makes Wails beta.8's package
+          # loader scan both GOOS implementations and emit spurious conflicts.
+          # Keep binding generation on the host platform; Android tags are only
+          # needed for the native shared-library build below.
+          BUILD_FLAGS: ''
           PRODUCTION:
             ref: .PRODUCTION
     cmds:
@@ -58,57 +56,62 @@ tasks:
 
   compile:go:shared:
     summary: Compile Go code to shared library (.so)
+    deps:
+      - task: generate:android:overlay
     cmds:
-      - |
-        # Locate the NDK: $ANDROID_NDK_HOME, or the newest installed NDK
-        NDK_ROOT="$ANDROID_NDK_HOME"
-        if [ -z "$NDK_ROOT" ]; then
-          SDK_ROOT="{{.SDK_ROOT}}"
-          NDK_ROOT=$(ls -d "$SDK_ROOT"/ndk/* 2>/dev/null | sort -V | tail -1)
-        fi
-        if [ -z "$NDK_ROOT" ] || [ ! -d "$NDK_ROOT" ]; then
-          echo "Error: Android NDK not found"
-          echo "Install one with: sdkmanager 'ndk;26.3.11579264' (or set ANDROID_NDK_HOME)"
-          exit 1
-        fi
-
-        # Determine toolchain based on host OS
-        case "$(uname -s)" in
-          Darwin) HOST_TAG="darwin-x86_64" ;;
-          Linux)  HOST_TAG="linux-x86_64" ;;
-          *)      echo "Unsupported host OS"; exit 1 ;;
-        esac
-
-        TOOLCHAIN="$NDK_ROOT/toolchains/llvm/prebuilt/$HOST_TAG"
-
-        # Set compiler based on architecture
-        case "{{.ARCH}}" in
-          arm64)
-            export CC="$TOOLCHAIN/bin/aarch64-linux-android{{.MIN_SDK}}-clang"
-            export CXX="$TOOLCHAIN/bin/aarch64-linux-android{{.MIN_SDK}}-clang++"
-            export GOARCH=arm64
-            JNI_DIR="arm64-v8a"
-            ;;
-          amd64|x86_64)
-            export CC="$TOOLCHAIN/bin/x86_64-linux-android{{.MIN_SDK}}-clang"
-            export CXX="$TOOLCHAIN/bin/x86_64-linux-android{{.MIN_SDK}}-clang++"
-            export GOARCH=amd64
-            JNI_DIR="x86_64"
-            ;;
-          *)
-            echo "Unsupported architecture: {{.ARCH}}"
+      - cmd: pwsh -NoProfile -File build/android/scripts/compile_windows.ps1 -Arch "{{.ARCH}}" -Production "{{.PRODUCTION | default "false"}}"
+        platforms: [windows]
+      - cmd: |
+          # Locate the NDK: $ANDROID_NDK_HOME, or the newest installed NDK
+          NDK_ROOT="$ANDROID_NDK_HOME"
+          if [ -z "$NDK_ROOT" ]; then
+            SDK_ROOT="{{.SDK_ROOT}}"
+            NDK_ROOT=$(ls -d "$SDK_ROOT"/ndk/* 2>/dev/null | sort -V | tail -1)
+          fi
+          if [ -z "$NDK_ROOT" ] || [ ! -d "$NDK_ROOT" ]; then
+            echo "Error: Android NDK not found"
+            echo "Install one with: sdkmanager 'ndk;26.3.11579264' (or set ANDROID_NDK_HOME)"
             exit 1
-            ;;
-        esac
+          fi
 
-        export CGO_ENABLED=1
-        export GOOS=android
+          # Determine toolchain based on host OS
+          case "$(uname -s)" in
+            Darwin) HOST_TAG="darwin-x86_64" ;;
+            Linux)  HOST_TAG="linux-x86_64" ;;
+            *)      echo "Unsupported host OS"; exit 1 ;;
+          esac
 
-        mkdir -p {{.BIN_DIR}}
-        mkdir -p build/android/app/src/main/jniLibs/$JNI_DIR
+          TOOLCHAIN="$NDK_ROOT/toolchains/llvm/prebuilt/$HOST_TAG"
 
-        go build -buildmode=c-shared -overlay build/android/overlay.json {{.BUILD_FLAGS}} \
-          -o build/android/app/src/main/jniLibs/$JNI_DIR/libwails.so
+          # Set compiler based on architecture
+          case "{{.ARCH}}" in
+            arm64)
+              export CC="$TOOLCHAIN/bin/aarch64-linux-android{{.MIN_SDK}}-clang"
+              export CXX="$TOOLCHAIN/bin/aarch64-linux-android{{.MIN_SDK}}-clang++"
+              export GOARCH=arm64
+              JNI_DIR="arm64-v8a"
+              ;;
+            amd64|x86_64)
+              export CC="$TOOLCHAIN/bin/x86_64-linux-android{{.MIN_SDK}}-clang"
+              export CXX="$TOOLCHAIN/bin/x86_64-linux-android{{.MIN_SDK}}-clang++"
+              export GOARCH=amd64
+              JNI_DIR="x86_64"
+              ;;
+            *)
+              echo "Unsupported architecture: {{.ARCH}}"
+              exit 1
+              ;;
+          esac
+
+          export CGO_ENABLED=1
+          export GOOS=android
+
+          mkdir -p {{.BIN_DIR}}
+          mkdir -p build/android/app/src/main/jniLibs/$JNI_DIR
+
+          go build -buildmode=c-shared -overlay build/android/overlay.json {{.BUILD_FLAGS}} \
+            -o build/android/app/src/main/jniLibs/$JNI_DIR/libwails.so
+        platforms: [linux, darwin]
     vars:
       BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
 
@@ -178,72 +181,76 @@ tasks:
 
   assemble:apk:
     summary: Assembles a debug APK using Gradle
-    preconditions:
-      - sh: 'command -v java >/dev/null || [ -n "$JAVA_HOME" ]'
-        msg: "Java not found. Install a JDK (e.g. brew install openjdk@21) and/or set JAVA_HOME"
     cmds:
-      - |
-        cd build/android
-        # The exec bit is lost when gradlew is extracted from the embedded
-        # build assets, so restore it before invoking the wrapper.
-        chmod +x ./gradlew
-        ./gradlew assembleDebug
-        cp app/build/outputs/apk/debug/app-debug.apk "../../{{.BIN_DIR}}/{{.APP_NAME}}.apk"
-        echo "APK created: {{.BIN_DIR}}/{{.APP_NAME}}.apk"
+      - cmd: >-
+          pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat assembleDebug; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/apk/debug/app-debug.apk "{{.BIN_DIR}}/{{.APP_NAME}}.apk"; Write-Host "APK created: {{.BIN_DIR}}/{{.APP_NAME}}.apk"'
+        platforms: [windows]
+      - cmd: |
+          cd build/android
+          # The exec bit is lost when gradlew is extracted from the embedded
+          # build assets, so restore it before invoking the wrapper.
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk "../../{{.BIN_DIR}}/{{.APP_NAME}}.apk"
+          echo "APK created: {{.BIN_DIR}}/{{.APP_NAME}}.apk"
+        platforms: [linux, darwin]
 
   assemble:apk:release:
     summary: Assembles a release APK using Gradle (signed with the debug keystore unless ANDROID_KEYSTORE_FILE is set)
-    preconditions:
-      - sh: 'command -v java >/dev/null || [ -n "$JAVA_HOME" ]'
-        msg: "Java not found. Install a JDK (e.g. brew install openjdk@21) and/or set JAVA_HOME"
     cmds:
-      - |
-        cd build/android
-        # The exec bit is lost when gradlew is extracted from the embedded
-        # build assets, so restore it before invoking the wrapper.
-        chmod +x ./gradlew
-        ./gradlew assembleRelease
-        cp app/build/outputs/apk/release/app-release.apk "../../{{.BIN_DIR}}/{{.APP_NAME}}.apk"
-        echo "Release APK created: {{.BIN_DIR}}/{{.APP_NAME}}.apk"
+      - cmd: >-
+          pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat assembleRelease; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/apk/release/app-release.apk "{{.BIN_DIR}}/{{.APP_NAME}}.apk"; Write-Host "Release APK created: {{.BIN_DIR}}/{{.APP_NAME}}.apk"'
+        platforms: [windows]
+      - cmd: |
+          cd build/android
+          # The exec bit is lost when gradlew is extracted from the embedded
+          # build assets, so restore it before invoking the wrapper.
+          chmod +x ./gradlew
+          ./gradlew assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk "../../{{.BIN_DIR}}/{{.APP_NAME}}.apk"
+          echo "Release APK created: {{.BIN_DIR}}/{{.APP_NAME}}.apk"
+        platforms: [linux, darwin]
 
   assemble:aab:
     summary: Assembles a debug AAB (Android App Bundle) using Gradle
-    preconditions:
-      - sh: 'command -v java >/dev/null || [ -n "$JAVA_HOME" ]'
-        msg: "Java not found. Install a JDK (e.g. brew install openjdk@21) and/or set JAVA_HOME"
     cmds:
-      - |
-        cd build/android
-        # The exec bit is lost when gradlew is extracted from the embedded
-        # build assets, so restore it before invoking the wrapper.
-        chmod +x ./gradlew
-        ./gradlew bundleDebug
-        cp app/build/outputs/bundle/debug/app-debug.aab "../../{{.BIN_DIR}}/{{.APP_NAME}}.aab"
-        echo "AAB created: {{.BIN_DIR}}/{{.APP_NAME}}.aab"
+      - cmd: >-
+          pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat bundleDebug; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/bundle/debug/app-debug.aab "{{.BIN_DIR}}/{{.APP_NAME}}.aab"; Write-Host "AAB created: {{.BIN_DIR}}/{{.APP_NAME}}.aab"'
+        platforms: [windows]
+      - cmd: |
+          cd build/android
+          # The exec bit is lost when gradlew is extracted from the embedded
+          # build assets, so restore it before invoking the wrapper.
+          chmod +x ./gradlew
+          ./gradlew bundleDebug
+          cp app/build/outputs/bundle/debug/app-debug.aab "../../{{.BIN_DIR}}/{{.APP_NAME}}.aab"
+          echo "AAB created: {{.BIN_DIR}}/{{.APP_NAME}}.aab"
+        platforms: [linux, darwin]
 
   assemble:aab:release:
     summary: Assembles a release AAB for Play Store upload (signed with the debug keystore unless ANDROID_KEYSTORE_FILE is set)
-    preconditions:
-      - sh: 'command -v java >/dev/null || [ -n "$JAVA_HOME" ]'
-        msg: "Java not found. Install a JDK (e.g. brew install openjdk@21) and/or set JAVA_HOME"
     cmds:
-      - |
-        # With Play App Signing, the keystore configured here is your UPLOAD
-        # key: Google verifies the upload with it, then re-signs the app with
-        # the app signing key it manages for distribution.
-        if [ -z "$ANDROID_KEYSTORE_FILE" ]; then
-          echo "WARNING: ANDROID_KEYSTORE_FILE is not set, so this AAB will be"
-          echo "signed with the debug keystore. Google Play rejects debug-signed"
-          echo "bundles. Set ANDROID_KEYSTORE_FILE, ANDROID_KEYSTORE_PASSWORD,"
-          echo "ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD before uploading."
-        fi
-        cd build/android
-        # The exec bit is lost when gradlew is extracted from the embedded
-        # build assets, so restore it before invoking the wrapper.
-        chmod +x ./gradlew
-        ./gradlew bundleRelease
-        cp app/build/outputs/bundle/release/app-release.aab "../../{{.BIN_DIR}}/{{.APP_NAME}}.aab"
-        echo "Release AAB created: {{.BIN_DIR}}/{{.APP_NAME}}.aab"
+      - cmd: >-
+          pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; if ([string]::IsNullOrWhiteSpace($env:ANDROID_KEYSTORE_FILE)) { Write-Warning "ANDROID_KEYSTORE_FILE is not set; release AAB uses the debug keystore and is not suitable for Play Store upload." }; Push-Location build/android; try { .\gradlew.bat bundleRelease; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/bundle/release/app-release.aab "{{.BIN_DIR}}/{{.APP_NAME}}.aab"; Write-Host "Release AAB created: {{.BIN_DIR}}/{{.APP_NAME}}.aab"'
+        platforms: [windows]
+      - cmd: |
+          # With Play App Signing, the keystore configured here is your UPLOAD
+          # key: Google verifies the upload with it, then re-signs the app with
+          # the app signing key it manages for distribution.
+          if [ -z "$ANDROID_KEYSTORE_FILE" ]; then
+            echo "WARNING: ANDROID_KEYSTORE_FILE is not set, so this AAB will be"
+            echo "signed with the debug keystore. Google Play rejects debug-signed"
+            echo "bundles. Set ANDROID_KEYSTORE_FILE, ANDROID_KEYSTORE_PASSWORD,"
+            echo "ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD before uploading."
+          fi
+          cd build/android
+          # The exec bit is lost when gradlew is extracted from the embedded
+          # build assets, so restore it before invoking the wrapper.
+          chmod +x ./gradlew
+          ./gradlew bundleRelease
+          cp app/build/outputs/bundle/release/app-release.aab "../../{{.BIN_DIR}}/{{.APP_NAME}}.aab"
+          echo "Release AAB created: {{.BIN_DIR}}/{{.APP_NAME}}.aab"
+        platforms: [linux, darwin]
 
   generate:android:overlay:
     internal: true
@@ -278,69 +285,67 @@ tasks:
     summary: Ensure Android Emulator is running
     silent: true
     cmds:
-      - |
-        # Check if an emulator is already running
-        if "{{.ADB}}" devices | grep -q "emulator"; then
-          echo "Emulator already running"
-          exit 0
-        fi
-
-        # Get first available AVD
-        AVD_NAME=$("{{.EMULATOR}}" -list-avds | tail -1)
-        if [ -z "$AVD_NAME" ]; then
-          # No AVD yet. Mirror the iOS `ensure-simulator` flow and create one
-          # automatically — but ONLY from a system image that is already
-          # installed. We never trigger an sdkmanager download from a `run`
-          # task (that would be a surprise multi-GB download + license prompt).
-          # Pick the highest-API installed image matching the host ABI.
-          SDK_ROOT="{{.SDK_ROOT}}"
-          ABI="{{.ANDROID_ABI}}"
-          IMG=$(ls -d "$SDK_ROOT"/system-images/android-*/*/"$ABI" 2>/dev/null | sort -V | tail -1)
-          AVDMANAGER="{{.AVDMANAGER}}"
-          if [ -n "$IMG" ] && [ -x "$AVDMANAGER" ]; then
-            PKG="system-images;$(echo "$IMG" | sed "s|$SDK_ROOT/system-images/||" | tr '/' ';')"
-            echo "No Android Virtual Devices found. Creating 'wails' from $PKG..."
-            echo "no" | "$AVDMANAGER" create avd --name wails --package "$PKG" --device pixel_7 --force
-            AVD_NAME=wails
-          else
-            echo "No Android Virtual Devices found, and no system image is installed to create one from."
-            echo "Install a system image and create an AVD, e.g.:"
-            echo "  sdkmanager 'system-images;android-35;google_apis;$ABI'"
-            echo "  avdmanager create avd --name wails --package 'system-images;android-35;google_apis;$ABI' --device pixel_7"
-            exit 1
-          fi
-        fi
-
-        echo "Starting emulator: $AVD_NAME"
-        # Start the emulator daemonized so it outlives this task step. go-task's
-        # shell tracks background jobs by PID and reaps them when the command's
-        # interpreter finishes (which nohup/setsid alone don't prevent — the kill
-        # is direct), so a bare `emulator &` is gone before the later
-        # install/launch steps run. Launch it from a short-lived child shell that
-        # backgrounds the emulator and exits immediately: the emulator is then
-        # reparented to init/launchd and go-task's shell has no handle to reap it.
-        nohup sh -c "'{{.EMULATOR}}' -avd '$AVD_NAME' -no-snapshot-load </dev/null >/dev/null 2>&1 &" >/dev/null 2>&1
-
-        # Wait for emulator to boot (max 120 seconds)
-        echo "Waiting for emulator to boot..."
-        "{{.ADB}}" wait-for-device
-
-        for i in $(seq 1 120); do
-          BOOT_COMPLETED=$("{{.ADB}}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-          if [ "$BOOT_COMPLETED" = "1" ]; then
-            echo "Emulator booted successfully"
+      - cmd: pwsh -NoProfile -File build/android/scripts/ensure_emulator_windows.ps1 -SdkRoot "{{.SDK_ROOT}}"
+        platforms: [windows]
+      - cmd: |
+          # Check if an emulator is already running
+          if "{{.ADB}}" devices | grep -q "emulator"; then
+            echo "Emulator already running"
             exit 0
           fi
-          sleep 1
-        done
 
-        echo "Emulator boot timeout"
-        exit 1
-    preconditions:
-      - sh: '[ -x "{{.ADB}}" ] || command -v adb'
-        msg: "adb not found. Install the Android SDK platform-tools (or set ANDROID_HOME)"
-      - sh: '[ -x "{{.EMULATOR}}" ] || command -v emulator'
-        msg: "emulator not found. Install the Android SDK emulator package (or set ANDROID_HOME)"
+          # Get first available AVD
+          AVD_NAME=$("{{.EMULATOR}}" -list-avds | tail -1)
+          if [ -z "$AVD_NAME" ]; then
+            # No AVD yet. Mirror the iOS `ensure-simulator` flow and create one
+            # automatically — but ONLY from a system image that is already
+            # installed. We never trigger an sdkmanager download from a `run`
+            # task (that would be a surprise multi-GB download + license prompt).
+            # Pick the highest-API installed image matching the host ABI.
+            SDK_ROOT="{{.SDK_ROOT}}"
+            ABI="{{.ANDROID_ABI}}"
+            IMG=$(ls -d "$SDK_ROOT"/system-images/android-*/*/"$ABI" 2>/dev/null | sort -V | tail -1)
+            AVDMANAGER="{{.AVDMANAGER}}"
+            if [ -n "$IMG" ] && [ -x "$AVDMANAGER" ]; then
+              PKG="system-images;$(echo "$IMG" | sed "s|$SDK_ROOT/system-images/||" | tr '/' ';')"
+              echo "No Android Virtual Devices found. Creating 'wails' from $PKG..."
+              echo "no" | "$AVDMANAGER" create avd --name wails --package "$PKG" --device pixel_7 --force
+              AVD_NAME=wails
+            else
+              echo "No Android Virtual Devices found, and no system image is installed to create one from."
+              echo "Install a system image and create an AVD, e.g.:"
+              echo "  sdkmanager 'system-images;android-35;google_apis;$ABI'"
+              echo "  avdmanager create avd --name wails --package 'system-images;android-35;google_apis;$ABI' --device pixel_7"
+              exit 1
+            fi
+          fi
+
+          echo "Starting emulator: $AVD_NAME"
+          # Start the emulator daemonized so it outlives this task step. go-task's
+          # shell tracks background jobs by PID and reaps them when the command's
+          # interpreter finishes (which nohup/setsid alone don't prevent — the kill
+          # is direct), so a bare `emulator &` is gone before the later
+          # install/launch steps run. Launch it from a short-lived child shell that
+          # backgrounds the emulator and exits immediately: the emulator is then
+          # reparented to init/launchd and go-task's shell has no handle to reap it.
+          nohup sh -c "'{{.EMULATOR}}' -avd '$AVD_NAME' -no-snapshot-load </dev/null >/dev/null 2>&1 &" >/dev/null 2>&1
+
+          # Wait for emulator to boot (max 120 seconds)
+          echo "Waiting for emulator to boot..."
+          "{{.ADB}}" wait-for-device
+
+          for i in $(seq 1 120); do
+            BOOT_COMPLETED=$("{{.ADB}}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$BOOT_COMPLETED" = "1" ]; then
+              echo "Emulator booted successfully"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Emulator boot timeout"
+          exit 1
+        platforms: [linux, darwin]
 
   deploy-emulator:
     summary: Deploy the packaged release APK to the Android Emulator
@@ -458,7 +463,11 @@ tasks:
   clean:
     summary: Clean build artifacts
     cmds:
-      - rm -rf {{.BIN_DIR}}
-      - rm -rf build/android/app/build
-      - rm -rf build/android/app/src/main/jniLibs/*/libwails.so
-      - rm -rf build/android/.gradle
+      - cmd: pwsh -NoProfile -Command 'Remove-Item -Recurse -Force "{{.BIN_DIR}}", "build/android/app/build", "build/android/.gradle" -ErrorAction SilentlyContinue; Get-ChildItem "build/android/app/src/main/jniLibs" -Filter libwails.so -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force'
+        platforms: [windows]
+      - cmd: |
+          rm -rf {{.BIN_DIR}}
+          rm -rf build/android/app/build
+          rm -rf build/android/app/src/main/jniLibs/*/libwails.so
+          rm -rf build/android/.gradle
+        platforms: [linux, darwin]
