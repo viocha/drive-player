@@ -17,13 +17,17 @@ export interface AppState {
     "thumbnailMaxAgeDays": number;
     "thumbnailMaxSizeMB": number;
     "thumbnailOffsetPercent": number;
+    "videoSnapshotMaxAgeDays": number;
+    "videoSnapshotMaxSizeMB": number;
     "playbackMaxAgeDays": number;
     "playbackMaxSizeMB": number;
     "fullscreenHudEnabled": boolean;
     "fullscreenHudSideOffsetPx": number;
+    "mobileLongPressRate": number;
     "storageDirectory": string;
     "configPath": string;
     "thumbnailDirectory": string;
+    "videoSnapshotDirectory": string;
     "playbackProgressPath": string;
     "proxyBaseUrl": string;
     "webdavProxyBaseUrl": string;
@@ -71,4 +75,14 @@ export interface ThumbnailCacheStats {
 export interface ThumbnailResult {
     "found": boolean;
     "dataUrl": string;
+}
+
+export interface VideoSnapshot {
+    "position": number;
+    "url": string;
+}
+
+export interface VideoSnapshotCacheStats {
+    "count": number;
+    "totalBytes": number;
 }

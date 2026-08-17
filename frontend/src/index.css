@@ -154,14 +154,73 @@ body {
     @apply flex shrink-0 flex-col items-stretch justify-between gap-2 bg-background px-3 py-3 sm:h-16 sm:flex-row sm:items-center sm:gap-4 sm:px-4 sm:py-0 md:px-6;
   }
 
-  .video-player-frame {
-    position: relative;
+  .video-player-layout {
     width: 100%;
     height: 100%;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    overflow: hidden;
+    background: black;
+  }
+
+  .video-player-layout--desktop {
+    flex-direction: row;
+  }
+
+  .video-player-layout--mobile {
+    flex-direction: column;
+  }
+
+  .video-player-layout--mobile:has(> .video-player-sidebar:not(.video-player-sidebar--detached-hidden)) .video-player-frame {
+    flex: 0 0 40%;
+  }
+
+  .video-player-frame {
+    position: relative;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
     display: flex;
     align-items: center;
     justify-content: center;
     background: black;
+  }
+
+  .video-player-sidebar {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    color: var(--foreground);
+    background: var(--background);
+  }
+
+  .video-player-sidebar--detached-hidden {
+    display: none;
+  }
+
+  .video-player-layout--desktop > .video-player-sidebar {
+    width: 18rem;
+    border-left: 1px solid var(--border);
+  }
+
+  .video-player-layout--mobile > .video-player-sidebar {
+    width: 100%;
+    flex: 1 1 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .video-player-frame .media-player-pane {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: black;
+    container: media-root / inline-size;
   }
 
   .video-player-frame video-skin,
@@ -179,8 +238,41 @@ body {
   }
 }
 
+/* Video.js ships its skin as unlayered CSS. Keep layout overrides that must
+   beat the skin's root `display: block` unlayered as well. */
+.video-player-frame .media-default-skin--side-panel-open {
+  --video-player-sidebar-width: min(20rem, 38vw);
+  display: flex;
+}
+
+.video-player-frame .media-default-skin--side-panel-open .media-player-pane {
+  flex: 1 1 0;
+  width: auto;
+}
+
+.video-player-frame .media-default-skin--side-panel-open .video-player-sidebar--fullscreen {
+  position: relative;
+  z-index: 90;
+  flex: 0 0 var(--video-player-sidebar-width);
+  width: var(--video-player-sidebar-width);
+  height: 100%;
+  border-left: 1px solid var(--border);
+}
+
+.video-player-sidebar--fullscreen.video-player-sidebar--closed {
+  display: none;
+}
+
 .video-player-frame .media-default-skin:focus-visible {
   outline-color: transparent;
+}
+
+.video-player-frame .media-default-skin:has(.video-player-sidebar--fullscreen) {
+  cursor: auto;
+}
+
+[data-slot="toast-viewport"] {
+  z-index: 200;
 }
 
 .video-player-frame .media-default-skin {
@@ -188,11 +280,21 @@ body {
   border-bottom-left-radius: 0;
 }
 
-.video-player-frame--android,
-.video-player-frame--android .media-default-skin,
-.video-player-frame--android video {
+.video-player-frame--android .media-player-pane,
+.video-player-frame--android .media-player-pane video {
   touch-action: none;
   overscroll-behavior: none;
+}
+
+.video-player-layout--mobile .media-player-pane,
+.video-player-layout--mobile .media-player-pane video {
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+.video-player-frame--android .video-player-sidebar--fullscreen [data-slot="scroll-area-viewport"] {
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
 }
 
 .video-player-frame--fullscreen {
@@ -248,21 +350,21 @@ body {
 
 .video-gesture-feedback {
   position: absolute;
-  top: 50%;
+  top: 0.75rem;
   left: 50%;
   z-index: 60;
-  min-width: 7rem;
+  min-width: 4rem;
   max-width: calc(100% - 3rem);
-  transform: translate(-50%, -50%);
-  padding: 0.55rem 0.8rem;
-  border-radius: 0.65rem;
-  background: rgb(0 0 0 / 68%);
+  transform: translateX(-50%);
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
   color: white;
-  font-size: 0.875rem;
+  font-size: 0.75rem;
+  line-height: 1rem;
   font-variant-numeric: tabular-nums;
   text-align: center;
+  white-space: nowrap;
   pointer-events: none;
-  backdrop-filter: blur(6px);
 }
 
 .video-mini-progress {
@@ -284,4 +386,25 @@ body {
   width: var(--video-mini-progress, 0%);
   height: 100%;
   background: rgb(255 255 255 / 90%);
+}
+@media (max-width: 639px) {
+  .settings-dialog-content {
+    box-shadow: none;
+  }
+}
+
+.video-dialog-content--mobile {
+  border: 0 !important;
+  box-shadow: none !important;
+  outline: 0 !important;
+}
+
+.video-dialog-overlay--mobile {
+  animation: none !important;
+  background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+  filter: none !important;
+  opacity: 1 !important;
 }

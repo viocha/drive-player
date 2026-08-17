@@ -6,6 +6,7 @@ import {
   type ReactNode,
   useEffect,
 } from "react";
+import { PanelRight } from "lucide-react";
 import {
   audioText,
   captionsText,
@@ -62,6 +63,7 @@ import {
   Time,
   TimeSlider,
   Tooltip,
+  useHotkey,
   usePlayer,
   useTranslator,
   VolumeIndicator,
@@ -386,6 +388,11 @@ export type DriveVideoSkinProps = PropsWithChildren<{
   className?: string;
   style?: CSSProperties;
   onTimeSliderProgress?: (progress: { position: number; duration: number; dragging: boolean }) => void;
+  sidePanel?: ReactNode;
+  sidePanelControl?: {
+    active: boolean;
+    onToggle: () => void;
+  };
   nativeFullscreen?: {
     active: boolean;
     onToggle: () => void;
@@ -425,6 +432,35 @@ function NativeFullscreenControl({ active, onToggle }: { active: boolean; onTogg
   );
 }
 
+function SidePanelControl({ active, onToggle }: { active: boolean; onToggle: () => void }) {
+  useHotkey({
+    keys: "s",
+    onActivate: onToggle,
+  });
+
+  return (
+    <Tooltip.Root side="top">
+      <Tooltip.Trigger
+        render={
+          <Button
+            className="media-button--side-panel"
+            aria-label={active ? "关闭播放器侧栏" : "打开播放器侧栏"}
+            aria-pressed={active}
+            aria-keyshortcuts="S"
+            onClick={onToggle}
+          >
+            <PanelRight className="media-icon" />
+          </Button>
+        }
+      />
+      <Tooltip.Popup className="media-surface media-tooltip">
+        <Tooltip.Label>{active ? "关闭播放器侧栏" : "打开播放器侧栏"}</Tooltip.Label>
+        <Tooltip.Shortcut className="media-tooltip__kbd">S</Tooltip.Shortcut>
+      </Tooltip.Popup>
+    </Tooltip.Root>
+  );
+}
+
 /**
  * Ejected from the Video.js v10 default React video skin so the application's
  * gesture semantics are explicit instead of overriding preset behavior later.
@@ -435,9 +471,16 @@ export function DriveVideoSkin({
   style,
   nativeFullscreen,
   onTimeSliderProgress,
+  sidePanel,
+  sidePanelControl,
 }: DriveVideoSkinProps): ReactNode {
+  const sidePanelOpen = sidePanelControl?.active === true;
   return (
-    <Container className={`media-default-skin media-default-skin--video ${className ?? ""}`} style={style}>
+    <Container
+      className={`media-default-skin media-default-skin--video${sidePanelOpen ? " media-default-skin--side-panel-open" : ""} ${className ?? ""}`}
+      style={style}
+    >
+      <div className="media-player-pane">
       {children}
 
       <BufferingIndicator
@@ -533,6 +576,12 @@ export function DriveVideoSkin({
                 </Tooltip.Popup>
               </Tooltip.Root>
               <SettingsMenu />
+              {sidePanelControl ? (
+                <SidePanelControl
+                  active={sidePanelControl.active}
+                  onToggle={sidePanelControl.onToggle}
+                />
+              ) : null}
               {nativeFullscreen ? (
                 <NativeFullscreenControl active={nativeFullscreen.active} onToggle={nativeFullscreen.onToggle} />
               ) : null}
@@ -612,6 +661,8 @@ export function DriveVideoSkin({
         </SeekIndicator.Root>
 
       </div>
+      </div>
+      {sidePanel ?? null}
     </Container>
   );
 }

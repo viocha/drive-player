@@ -25,6 +25,14 @@ export function ClearThumbnailCache(): $CancellablePromise<$models.ThumbnailCach
     return $Call.ByID(3145136249);
 }
 
+export function ClearVideoSnapshotCache(): $CancellablePromise<$models.VideoSnapshotCacheStats> {
+    return $Call.ByID(1132925968);
+}
+
+export function ClearVideoSnapshots(remotePath: string, modifiedAt: string): $CancellablePromise<$models.VideoSnapshotCacheStats> {
+    return $Call.ByID(2961201875, remotePath, modifiedAt);
+}
+
 export function GetBatteryPercent(): $CancellablePromise<number> {
     return $Call.ByID(2336122500);
 }
@@ -55,6 +63,14 @@ export function GetThumbnail(remotePath: string, modifiedAt: string): $Cancellab
 
 export function GetThumbnailCacheStats(): $CancellablePromise<$models.ThumbnailCacheStats> {
     return $Call.ByID(2398776823);
+}
+
+export function GetVideoSnapshotCacheStats(): $CancellablePromise<$models.VideoSnapshotCacheStats> {
+    return $Call.ByID(3393229812);
+}
+
+export function GetVideoSnapshots(remotePath: string, modifiedAt: string): $CancellablePromise<$models.VideoSnapshot[] | null> {
+    return $Call.ByID(421301802, remotePath, modifiedAt);
 }
 
 export function ListDirectory(remotePath: string): $CancellablePromise<$models.FileEntry[] | null> {
@@ -89,8 +105,16 @@ export function SaveThumbnail(remotePath: string, modifiedAt: string, dataURL: s
     return $Call.ByID(1600312045, remotePath, modifiedAt, dataURL);
 }
 
+export function SaveVideoSnapshot(remotePath: string, modifiedAt: string, position: number, dataURL: string): $CancellablePromise<$models.VideoSnapshotCacheStats> {
+    return $Call.ByID(2624699718, remotePath, modifiedAt, position, dataURL);
+}
+
 export function SetFullscreenHUDSettings(enabled: boolean, offsetPX: number): $CancellablePromise<$models.AppState> {
     return $Call.ByID(1802682481, enabled, offsetPX);
+}
+
+export function SetMobileLongPressRate(rate: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(604432123, rate);
 }
 
 export function SetPlaybackProgressSettings(maxAgeDays: number, maxSizeMB: number): $CancellablePromise<$models.AppState> {
@@ -107,6 +131,10 @@ export function SetQuarkIDCacheTTL(minutes: number): $CancellablePromise<$models
 
 export function SetThumbnailSettings(maxAgeDays: number, maxSizeMB: number, offsetPercent: number): $CancellablePromise<$models.AppState> {
     return $Call.ByID(99162039, maxAgeDays, maxSizeMB, offsetPercent);
+}
+
+export function SetVideoSnapshotSettings(maxAgeDays: number, maxSizeMB: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(1769175436, maxAgeDays, maxSizeMB);
 }
 
 export function SetWebDAVCacheTTL(minutes: number): $CancellablePromise<$models.AppState> {

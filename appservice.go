@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,22 +30,31 @@ const (
 	defaultThumbnailMaxAgeDays       = 30
 	defaultThumbnailMaxSizeMB        = 512
 	defaultThumbnailOffsetPercent    = 10
+	defaultVideoSnapshotMaxAgeDays   = 30
+	defaultVideoSnapshotMaxSizeMB    = 1024
 	defaultPlaybackMaxAgeDays        = 365
 	defaultPlaybackMaxSizeMB         = 16
 	defaultFullscreenHUDEnabled      = false
 	defaultFullscreenHUDSideOffsetPX = 0
+	defaultMobileLongPressRate       = 3.0
 	minThumbnailMaxAgeDays           = 1
 	maxThumbnailMaxAgeDays           = 3650
 	minThumbnailMaxSizeMB            = 16
 	maxThumbnailMaxSizeMB            = 10240
 	minThumbnailOffsetPercent        = 0
 	maxThumbnailOffsetPercent        = 100
+	minVideoSnapshotMaxAgeDays       = 1
+	maxVideoSnapshotMaxAgeDays       = 3650
+	minVideoSnapshotMaxSizeMB        = 64
+	maxVideoSnapshotMaxSizeMB        = 10240
 	minPlaybackMaxAgeDays            = 1
 	maxPlaybackMaxAgeDays            = 3650
 	minPlaybackMaxSizeMB             = 1
 	maxPlaybackMaxSizeMB             = 1024
 	minFullscreenHUDSideOffsetPX     = 0
 	maxFullscreenHUDSideOffsetPX     = 200
+	minMobileLongPressRate           = 1.0
+	maxMobileLongPressRate           = 8.0
 	minQuarkIDCacheTTLMinutes        = 1
 	maxQuarkIDCacheTTLMinutes        = 1440
 	provider123                      = "123"
@@ -52,32 +62,36 @@ const (
 )
 
 type AppState struct {
-	Connected                    bool   `json:"connected"`
-	Connected123                 bool   `json:"connected123"`
-	ConnectedQuark               bool   `json:"connectedQuark"`
-	Provider                     string `json:"provider"`
-	Username                     string `json:"username"`
-	Password                     string `json:"password"`
-	QuarkCookie                  string `json:"quarkCookie"`
-	Endpoint                     string `json:"endpoint"`
-	QuarkEndpoint                string `json:"quarkEndpoint"`
-	WebDAVCacheTTLMinutes        int    `json:"webdavCacheTTLMinutes"`
-	QuarkDownloadCacheTTLMinutes int    `json:"quarkDownloadCacheTTLMinutes"`
-	QuarkIDCacheTTLMinutes       int    `json:"quarkIDCacheTTLMinutes"`
-	ThumbnailMaxAgeDays          int    `json:"thumbnailMaxAgeDays"`
-	ThumbnailMaxSizeMB           int    `json:"thumbnailMaxSizeMB"`
-	ThumbnailOffsetPercent       int    `json:"thumbnailOffsetPercent"`
-	PlaybackMaxAgeDays           int    `json:"playbackMaxAgeDays"`
-	PlaybackMaxSizeMB            int    `json:"playbackMaxSizeMB"`
-	FullscreenHUDEnabled         bool   `json:"fullscreenHudEnabled"`
-	FullscreenHUDSideOffsetPX    int    `json:"fullscreenHudSideOffsetPx"`
-	StorageDirectory             string `json:"storageDirectory"`
-	ConfigPath                   string `json:"configPath"`
-	ThumbnailDirectory           string `json:"thumbnailDirectory"`
-	PlaybackProgressPath         string `json:"playbackProgressPath"`
-	ProxyBaseURL                 string `json:"proxyBaseUrl"`
-	WebDAVProxyBaseURL           string `json:"webdavProxyBaseUrl"`
-	QuarkProxyBaseURL            string `json:"quarkProxyBaseUrl"`
+	Connected                    bool    `json:"connected"`
+	Connected123                 bool    `json:"connected123"`
+	ConnectedQuark               bool    `json:"connectedQuark"`
+	Provider                     string  `json:"provider"`
+	Username                     string  `json:"username"`
+	Password                     string  `json:"password"`
+	QuarkCookie                  string  `json:"quarkCookie"`
+	Endpoint                     string  `json:"endpoint"`
+	QuarkEndpoint                string  `json:"quarkEndpoint"`
+	WebDAVCacheTTLMinutes        int     `json:"webdavCacheTTLMinutes"`
+	QuarkDownloadCacheTTLMinutes int     `json:"quarkDownloadCacheTTLMinutes"`
+	QuarkIDCacheTTLMinutes       int     `json:"quarkIDCacheTTLMinutes"`
+	ThumbnailMaxAgeDays          int     `json:"thumbnailMaxAgeDays"`
+	ThumbnailMaxSizeMB           int     `json:"thumbnailMaxSizeMB"`
+	ThumbnailOffsetPercent       int     `json:"thumbnailOffsetPercent"`
+	VideoSnapshotMaxAgeDays      int     `json:"videoSnapshotMaxAgeDays"`
+	VideoSnapshotMaxSizeMB       int     `json:"videoSnapshotMaxSizeMB"`
+	PlaybackMaxAgeDays           int     `json:"playbackMaxAgeDays"`
+	PlaybackMaxSizeMB            int     `json:"playbackMaxSizeMB"`
+	FullscreenHUDEnabled         bool    `json:"fullscreenHudEnabled"`
+	FullscreenHUDSideOffsetPX    int     `json:"fullscreenHudSideOffsetPx"`
+	MobileLongPressRate          float64 `json:"mobileLongPressRate"`
+	StorageDirectory             string  `json:"storageDirectory"`
+	ConfigPath                   string  `json:"configPath"`
+	ThumbnailDirectory           string  `json:"thumbnailDirectory"`
+	VideoSnapshotDirectory       string  `json:"videoSnapshotDirectory"`
+	PlaybackProgressPath         string  `json:"playbackProgressPath"`
+	ProxyBaseURL                 string  `json:"proxyBaseUrl"`
+	WebDAVProxyBaseURL           string  `json:"webdavProxyBaseUrl"`
+	QuarkProxyBaseURL            string  `json:"quarkProxyBaseUrl"`
 }
 
 type FileEntry struct {
@@ -90,20 +104,23 @@ type FileEntry struct {
 }
 
 type diskConfig struct {
-	WebDAVCacheTTLMinutes        int    `json:"webdavCacheTTLMinutes"`
-	QuarkDownloadCacheTTLMinutes int    `json:"quarkDownloadCacheTTLMinutes"`
-	QuarkIDCacheTTLMinutes       int    `json:"quarkIDCacheTTLMinutes"`
-	ThumbnailMaxAgeDays          int    `json:"thumbnailMaxAgeDays"`
-	ThumbnailMaxSizeMB           int    `json:"thumbnailMaxSizeMB"`
-	ThumbnailOffsetPercent       int    `json:"thumbnailOffsetPercent"`
-	PlaybackMaxAgeDays           int    `json:"playbackMaxAgeDays"`
-	PlaybackMaxSizeMB            int    `json:"playbackMaxSizeMB"`
-	FullscreenHUDEnabled         bool   `json:"fullscreenHudEnabled"`
-	FullscreenHUDSideOffsetPX    int    `json:"fullscreenHudSideOffsetPx"`
-	Username                     string `json:"username"`
-	Password                     string `json:"password"`
-	Provider                     string `json:"provider"`
-	QuarkCookie                  string `json:"quarkCookie"`
+	WebDAVCacheTTLMinutes        int     `json:"webdavCacheTTLMinutes"`
+	QuarkDownloadCacheTTLMinutes int     `json:"quarkDownloadCacheTTLMinutes"`
+	QuarkIDCacheTTLMinutes       int     `json:"quarkIDCacheTTLMinutes"`
+	ThumbnailMaxAgeDays          int     `json:"thumbnailMaxAgeDays"`
+	ThumbnailMaxSizeMB           int     `json:"thumbnailMaxSizeMB"`
+	ThumbnailOffsetPercent       int     `json:"thumbnailOffsetPercent"`
+	VideoSnapshotMaxAgeDays      int     `json:"videoSnapshotMaxAgeDays"`
+	VideoSnapshotMaxSizeMB       int     `json:"videoSnapshotMaxSizeMB"`
+	PlaybackMaxAgeDays           int     `json:"playbackMaxAgeDays"`
+	PlaybackMaxSizeMB            int     `json:"playbackMaxSizeMB"`
+	FullscreenHUDEnabled         bool    `json:"fullscreenHudEnabled"`
+	FullscreenHUDSideOffsetPX    int     `json:"fullscreenHudSideOffsetPx"`
+	MobileLongPressRate          float64 `json:"mobileLongPressRate"`
+	Username                     string  `json:"username"`
+	Password                     string  `json:"password"`
+	Provider                     string  `json:"provider"`
+	QuarkCookie                  string  `json:"quarkCookie"`
 }
 
 type credentials struct {
@@ -123,6 +140,7 @@ type AppService struct {
 	proxy          *WebDAVProxy
 	quark          *QuarkDrive
 	thumbnails     *ThumbnailCache
+	videoSnapshots *VideoSnapshotCache
 	progress       *PlaybackProgressStore
 	httpClient     *http.Client
 }
@@ -140,10 +158,13 @@ func NewAppService() (*AppService, error) {
 		ThumbnailMaxAgeDays:          defaultThumbnailMaxAgeDays,
 		ThumbnailMaxSizeMB:           defaultThumbnailMaxSizeMB,
 		ThumbnailOffsetPercent:       defaultThumbnailOffsetPercent,
+		VideoSnapshotMaxAgeDays:      defaultVideoSnapshotMaxAgeDays,
+		VideoSnapshotMaxSizeMB:       defaultVideoSnapshotMaxSizeMB,
 		PlaybackMaxAgeDays:           defaultPlaybackMaxAgeDays,
 		PlaybackMaxSizeMB:            defaultPlaybackMaxSizeMB,
 		FullscreenHUDEnabled:         defaultFullscreenHUDEnabled,
 		FullscreenHUDSideOffsetPX:    defaultFullscreenHUDSideOffsetPX,
+		MobileLongPressRate:          defaultMobileLongPressRate,
 		Provider:                     provider123,
 	}
 	if data, err := os.ReadFile(configPath); err == nil {
@@ -167,6 +188,12 @@ func NewAppService() (*AppService, error) {
 	if config.ThumbnailOffsetPercent < minThumbnailOffsetPercent || config.ThumbnailOffsetPercent > maxThumbnailOffsetPercent {
 		config.ThumbnailOffsetPercent = defaultThumbnailOffsetPercent
 	}
+	if config.VideoSnapshotMaxAgeDays < minVideoSnapshotMaxAgeDays || config.VideoSnapshotMaxAgeDays > maxVideoSnapshotMaxAgeDays {
+		config.VideoSnapshotMaxAgeDays = defaultVideoSnapshotMaxAgeDays
+	}
+	if config.VideoSnapshotMaxSizeMB < minVideoSnapshotMaxSizeMB || config.VideoSnapshotMaxSizeMB > maxVideoSnapshotMaxSizeMB {
+		config.VideoSnapshotMaxSizeMB = defaultVideoSnapshotMaxSizeMB
+	}
 	if config.PlaybackMaxAgeDays < minPlaybackMaxAgeDays || config.PlaybackMaxAgeDays > maxPlaybackMaxAgeDays {
 		config.PlaybackMaxAgeDays = defaultPlaybackMaxAgeDays
 	}
@@ -175,6 +202,9 @@ func NewAppService() (*AppService, error) {
 	}
 	if config.FullscreenHUDSideOffsetPX < minFullscreenHUDSideOffsetPX || config.FullscreenHUDSideOffsetPX > maxFullscreenHUDSideOffsetPX {
 		config.FullscreenHUDSideOffsetPX = defaultFullscreenHUDSideOffsetPX
+	}
+	if math.IsNaN(config.MobileLongPressRate) || math.IsInf(config.MobileLongPressRate, 0) || config.MobileLongPressRate < minMobileLongPressRate || config.MobileLongPressRate > maxMobileLongPressRate {
+		config.MobileLongPressRate = defaultMobileLongPressRate
 	}
 
 	proxy, err := NewWebDAVProxy(defaultWebDAVEndpoint, time.Duration(config.WebDAVCacheTTLMinutes)*time.Minute)
@@ -199,6 +229,18 @@ func NewAppService() (*AppService, error) {
 		_ = quark.Close()
 		return nil, err
 	}
+	videoSnapshotDirectory := filepath.Join(filepath.Dir(configPath), "video-snapshots")
+	videoSnapshotCache, err := NewVideoSnapshotCache(
+		videoSnapshotDirectory,
+		time.Duration(config.VideoSnapshotMaxAgeDays)*24*time.Hour,
+		int64(config.VideoSnapshotMaxSizeMB)*1024*1024,
+	)
+	if err != nil {
+		_ = proxy.Close()
+		_ = quark.Close()
+		return nil, err
+	}
+	proxy.SetVideoSnapshotDirectory(videoSnapshotDirectory)
 	playbackProgress, err := NewPlaybackProgressStore(
 		filepath.Join(filepath.Dir(configPath), "playback-progress.json"),
 		time.Duration(config.PlaybackMaxAgeDays)*24*time.Hour,
@@ -210,13 +252,14 @@ func NewAppService() (*AppService, error) {
 		return nil, err
 	}
 	service := &AppService{
-		config:     config,
-		configPath: configPath,
-		proxy:      proxy,
-		quark:      quark,
-		thumbnails: thumbnailCache,
-		progress:   playbackProgress,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		config:         config,
+		configPath:     configPath,
+		proxy:          proxy,
+		quark:          quark,
+		thumbnails:     thumbnailCache,
+		videoSnapshots: videoSnapshotCache,
+		progress:       playbackProgress,
+		httpClient:     &http.Client{Timeout: 30 * time.Second},
 	}
 	if config.Username != "" && config.Password != "" {
 		service.credentials = credentials{username: config.Username, password: config.Password}
@@ -271,13 +314,17 @@ func (s *AppService) GetState() AppState {
 		ThumbnailMaxAgeDays:          s.config.ThumbnailMaxAgeDays,
 		ThumbnailMaxSizeMB:           s.config.ThumbnailMaxSizeMB,
 		ThumbnailOffsetPercent:       s.config.ThumbnailOffsetPercent,
+		VideoSnapshotMaxAgeDays:      s.config.VideoSnapshotMaxAgeDays,
+		VideoSnapshotMaxSizeMB:       s.config.VideoSnapshotMaxSizeMB,
 		PlaybackMaxAgeDays:           s.config.PlaybackMaxAgeDays,
 		PlaybackMaxSizeMB:            s.config.PlaybackMaxSizeMB,
 		FullscreenHUDEnabled:         s.config.FullscreenHUDEnabled,
 		FullscreenHUDSideOffsetPX:    s.config.FullscreenHUDSideOffsetPX,
+		MobileLongPressRate:          s.config.MobileLongPressRate,
 		StorageDirectory:             storageDirectory,
 		ConfigPath:                   s.configPath,
 		ThumbnailDirectory:           filepath.Join(storageDirectory, "thumbnails"),
+		VideoSnapshotDirectory:       filepath.Join(storageDirectory, "video-snapshots"),
 		PlaybackProgressPath:         s.progress.Path(),
 		ProxyBaseURL:                 proxyBaseURL,
 		WebDAVProxyBaseURL:           s.proxy.BaseURL(),
@@ -606,6 +653,81 @@ func (s *AppService) SetThumbnailSettings(maxAgeDays, maxSizeMB, offsetPercent i
 	return s.GetState(), nil
 }
 
+func (s *AppService) GetVideoSnapshots(remotePath, modifiedAt string) ([]VideoSnapshot, error) {
+	accountKey, err := s.currentAccountKey()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := s.videoSnapshots.GetSeries(videoSnapshotCacheKey(accountKey, remotePath, modifiedAt))
+	if err != nil {
+		return nil, err
+	}
+	result := make([]VideoSnapshot, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, VideoSnapshot{
+			Position: entry.Position,
+			URL:      s.proxy.VideoSnapshotURL(entry.FileName),
+		})
+	}
+	return result, nil
+}
+
+func (s *AppService) SaveVideoSnapshot(remotePath, modifiedAt string, position float64, dataURL string) (VideoSnapshotCacheStats, error) {
+	accountKey, err := s.currentAccountKey()
+	if err != nil {
+		return VideoSnapshotCacheStats{}, err
+	}
+	return s.videoSnapshots.Save(videoSnapshotCacheKey(accountKey, remotePath, modifiedAt), position, dataURL)
+}
+
+func (s *AppService) ClearVideoSnapshots(remotePath, modifiedAt string) (VideoSnapshotCacheStats, error) {
+	accountKey, err := s.currentAccountKey()
+	if err != nil {
+		return VideoSnapshotCacheStats{}, err
+	}
+	return s.videoSnapshots.ClearSeries(videoSnapshotCacheKey(accountKey, remotePath, modifiedAt))
+}
+
+func (s *AppService) GetVideoSnapshotCacheStats() (VideoSnapshotCacheStats, error) {
+	return s.videoSnapshots.Stats()
+}
+
+func (s *AppService) ClearVideoSnapshotCache() (VideoSnapshotCacheStats, error) {
+	return s.videoSnapshots.Clear()
+}
+
+func (s *AppService) SetVideoSnapshotSettings(maxAgeDays, maxSizeMB int) (AppState, error) {
+	if maxAgeDays < minVideoSnapshotMaxAgeDays || maxAgeDays > maxVideoSnapshotMaxAgeDays {
+		return AppState{}, fmt.Errorf("视频截图保留时间必须在 %d 到 %d 天之间", minVideoSnapshotMaxAgeDays, maxVideoSnapshotMaxAgeDays)
+	}
+	if maxSizeMB < minVideoSnapshotMaxSizeMB || maxSizeMB > maxVideoSnapshotMaxSizeMB {
+		return AppState{}, fmt.Errorf("视频截图缓存上限必须在 %d 到 %d MB 之间", minVideoSnapshotMaxSizeMB, maxVideoSnapshotMaxSizeMB)
+	}
+
+	s.mu.Lock()
+	previous := s.config
+	s.config.VideoSnapshotMaxAgeDays = maxAgeDays
+	s.config.VideoSnapshotMaxSizeMB = maxSizeMB
+	config := s.config
+	s.mu.Unlock()
+
+	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.config = previous
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	if err := s.videoSnapshots.SetLimits(time.Duration(maxAgeDays)*24*time.Hour, int64(maxSizeMB)*1024*1024); err != nil {
+		s.mu.Lock()
+		s.config = previous
+		s.mu.Unlock()
+		_ = s.saveConfig(previous)
+		_ = s.videoSnapshots.SetLimits(time.Duration(previous.VideoSnapshotMaxAgeDays)*24*time.Hour, int64(previous.VideoSnapshotMaxSizeMB)*1024*1024)
+		return AppState{}, err
+	}
+	return s.GetState(), nil
+}
+
 func (s *AppService) GetPlaybackProgress(remotePath string) (PlaybackProgressResult, error) {
 	accountKey, err := s.currentAccountKey()
 	if err != nil {
@@ -671,6 +793,26 @@ func (s *AppService) SetFullscreenHUDSettings(enabled bool, offsetPX int) (AppSt
 	previous := s.config
 	s.config.FullscreenHUDEnabled = enabled
 	s.config.FullscreenHUDSideOffsetPX = offsetPX
+	config := s.config
+	s.mu.Unlock()
+
+	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.config = previous
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	return s.GetState(), nil
+}
+
+func (s *AppService) SetMobileLongPressRate(rate float64) (AppState, error) {
+	if math.IsNaN(rate) || math.IsInf(rate, 0) || rate < minMobileLongPressRate || rate > maxMobileLongPressRate {
+		return AppState{}, fmt.Errorf("移动端长按倍速必须在 %.1f 到 %.1f 倍之间", minMobileLongPressRate, maxMobileLongPressRate)
+	}
+
+	s.mu.Lock()
+	previous := s.config
+	s.config.MobileLongPressRate = rate
 	config := s.config
 	s.mu.Unlock()
 

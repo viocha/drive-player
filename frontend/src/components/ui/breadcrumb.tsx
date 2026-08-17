@@ -5,16 +5,19 @@ import { useRender } from "@base-ui/react/use-render"
 import { cn } from "@/lib/utils"
 import { ChevronRightIcon, MoreHorizontalIcon } from "lucide-react"
 
-function Breadcrumb({ className, ...props }: React.ComponentProps<"nav">) {
-  return (
+const Breadcrumb = React.forwardRef<HTMLElement, React.ComponentPropsWithoutRef<"nav">>(
+  ({ className, ...props }, ref) => (
     <nav
+      ref={ref}
       aria-label="breadcrumb"
       data-slot="breadcrumb"
       className={cn(className)}
       {...props}
     />
   )
-}
+)
+
+Breadcrumb.displayName = "Breadcrumb"
 
 function BreadcrumbList({ className, ...props }: React.ComponentProps<"ol">) {
   return (

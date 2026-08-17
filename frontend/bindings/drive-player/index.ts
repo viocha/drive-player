@@ -14,5 +14,7 @@ export type {
     QuarkIDCacheStats,
     RedirectCacheEntry,
     ThumbnailCacheStats,
-    ThumbnailResult
+    ThumbnailResult,
+    VideoSnapshot,
+    VideoSnapshotCacheStats
 } from "./models.js";

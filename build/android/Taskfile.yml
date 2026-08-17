@@ -7,10 +7,12 @@ vars:
   APP_ID: '{{.APP_ID | default "com.wails.app"}}'
   MIN_SDK: '21'
   TARGET_SDK: '35'
-  # The emulator runs the host architecture; physical devices are arm64
+  # Android builds target physical arm64 devices by default. Override with
+  # `ARCH=x86_64` only when another architecture is explicitly needed.
+  DEFAULT_ARCH: arm64
   HOST_ARCH: '{{ARCH}}'
   # System-image ABI for the host, used in the "create an AVD" hint below.
-  ANDROID_ABI: '{{if eq ARCH "arm64"}}arm64-v8a{{else}}x86_64{{end}}'
+  ANDROID_ABI: '{{if eq .HOST_ARCH "arm64"}}arm64-v8a{{else}}x86_64{{end}}'
   # SDK location: $ANDROID_HOME / $ANDROID_SDK_ROOT, else the per-OS default
   # (Windows: ANDROID_HOME should be set by Android Studio; macOS/Linux use defaults)
   SDK_ROOT: '{{if .ANDROID_HOME}}{{.ANDROID_HOME}}{{else if .ANDROID_SDK_ROOT}}{{.ANDROID_SDK_ROOT}}{{else if eq OS "darwin"}}{{.HOME}}/Library/Android/sdk{{else}}{{.HOME}}/Android/Sdk{{end}}'
@@ -48,7 +50,7 @@ tasks:
       - echo "Building Android app {{.APP_NAME}}..."
       - task: compile:go:shared
         vars:
-          ARCH: '{{.ARCH | default .HOST_ARCH}}'
+          ARCH: '{{.ARCH | default .DEFAULT_ARCH}}'
     vars:
       BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
     env:
@@ -181,6 +183,10 @@ tasks:
 
   assemble:apk:
     summary: Assembles a debug APK using Gradle
+    deps:
+      - task: build
+        vars:
+          ARCH: '{{.ARCH | default "arm64"}}'
     cmds:
       - cmd: >-
           pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat assembleDebug; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/apk/debug/app-debug.apk "{{.BIN_DIR}}/{{.APP_NAME}}.apk"; Write-Host "APK created: {{.BIN_DIR}}/{{.APP_NAME}}.apk"'
@@ -363,9 +369,10 @@ tasks:
     summary: Build, install and launch a debug build in the Android Emulator
     deps:
       - task: ensure-emulator
-      - task: build
     cmds:
       - task: assemble:apk
+        vars:
+          ARCH: '{{.HOST_ARCH}}'
       - '"{{.ADB}}" uninstall {{.APP_ID}} 2>/dev/null || true'
       - '"{{.ADB}}" install "{{.BIN_DIR}}/{{.APP_NAME}}.apk"'
       - '"{{.ADB}}" shell am start -n {{.APP_ID}}/com.wails.app.MainActivity'

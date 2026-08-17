@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -32,11 +35,12 @@ type WebDAVProxy struct {
 	server   *http.Server
 	listener net.Listener
 
-	mu       sync.RWMutex
-	username string
-	password string
-	ttl      time.Duration
-	cache    map[string]redirectCacheValue
+	mu               sync.RWMutex
+	username         string
+	password         string
+	ttl              time.Duration
+	cache            map[string]redirectCacheValue
+	videoSnapshotDir string
 
 	noRedirectClient *http.Client
 	streamClient     *http.Client
@@ -94,6 +98,21 @@ func (p *WebDAVProxy) URLForPath(remotePath string) string {
 		Scheme: "http",
 		Host:   p.listener.Addr().String(),
 		Path:   "/webdav" + normalizeRemotePath(remotePath),
+	}
+	return u.String()
+}
+
+func (p *WebDAVProxy) SetVideoSnapshotDirectory(dir string) {
+	p.mu.Lock()
+	p.videoSnapshotDir = dir
+	p.mu.Unlock()
+}
+
+func (p *WebDAVProxy) VideoSnapshotURL(fileName string) string {
+	u := &url.URL{
+		Scheme: "http",
+		Host:   p.listener.Addr().String(),
+		Path:   "/video-snapshots/" + fileName,
 	}
 	return u.String()
 }
@@ -157,6 +176,10 @@ func (p *WebDAVProxy) CacheEntries() []RedirectCacheEntry {
 
 func (p *WebDAVProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if strings.HasPrefix(r.URL.Path, "/video-snapshots/") {
+		p.serveVideoSnapshot(w, r)
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/webdav") {
 		http.NotFound(w, r)
 		return
@@ -181,6 +204,49 @@ func (p *WebDAVProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.proxyRequest(w, r, upstreamURL, username, password, true)
+}
+
+func (p *WebDAVProxy) serveVideoSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	fileName := strings.TrimPrefix(r.URL.Path, "/video-snapshots/")
+	if fileName == "" || strings.ContainsAny(fileName, `/\\`) || filepath.Base(fileName) != fileName || !isVideoSnapshotCacheFile(fileName) {
+		http.NotFound(w, r)
+		return
+	}
+
+	p.mu.RLock()
+	dir := p.videoSnapshotDir
+	p.mu.RUnlock()
+	if dir == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	file, err := os.Open(filepath.Join(dir, fileName))
+	if errors.Is(err, os.ErrNotExist) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "open video snapshot", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "private, no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeContent(w, r, fileName, info.ModTime(), file)
 }
 
 func (p *WebDAVProxy) getCredentials() (string, string) {

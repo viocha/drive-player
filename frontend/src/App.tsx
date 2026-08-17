@@ -14,7 +14,9 @@ import {
   Play,
   RefreshCw,
   Settings,
+  Square,
   Trash2,
+  X,
 } from "lucide-react";
 import { Events, System } from "@wailsio/runtime";
 import { AppService } from "../bindings/drive-player";
@@ -24,6 +26,8 @@ import type {
   PlaybackProgressStats,
   QuarkIDCacheStats,
   ThumbnailCacheStats,
+  VideoSnapshot,
+  VideoSnapshotCacheStats,
 } from "../bindings/drive-player";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -66,7 +70,7 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -112,6 +116,7 @@ const MAX_DIRECTORY_CACHE_MAX_SIZE_MB = 1024;
 type ActiveVideo = {
   name: string;
   path: string;
+  modifiedAt: string;
   url: string;
   resumePosition: number;
 };
@@ -273,20 +278,270 @@ function formatHUDClock(timestamp: number) {
   });
 }
 
+type PlayerSidebarTab = "snapshots" | "videos";
+
+function VideoSnapshotPane({
+  twoColumns = false,
+  snapshots,
+  loading,
+  extracting,
+  completedCount,
+  plannedCount,
+  onExtract,
+  onStop,
+  onJump,
+}: {
+  twoColumns?: boolean;
+  snapshots: VideoSnapshot[];
+  loading: boolean;
+  extracting: boolean;
+  completedCount: number;
+  plannedCount: number;
+  onExtract: () => void;
+  onStop: () => void;
+  onJump: (position: number) => void;
+}) {
+  const canExtract = !loading && plannedCount > 0 && completedCount < plannedCount;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b p-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">时间点截图</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            {loading
+              ? "正在读取缓存"
+              : extracting
+              ? `正在提取 ${completedCount}/${plannedCount}`
+              : snapshots.length > 0
+                ? `已缓存 ${snapshots.length} 张`
+                : "按视频时长等分提取原画"}
+          </div>
+        </div>
+        {(extracting || canExtract) && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={extracting ? onStop : onExtract}
+          >
+            {extracting ? <Square /> : <Play />}
+            {extracting ? "中断提取" : snapshots.length > 0 ? "补全截图" : "提取截图"}
+          </Button>
+        )}
+      </div>
+
+      <ScrollArea className="min-h-0 flex-1">
+        {snapshots.length === 0 ? (
+          <div className="flex min-h-28 items-center justify-center px-4 text-center text-xs text-muted-foreground">
+            {loading
+              ? "正在读取缓存…"
+              : extracting
+                ? "截图会在提取完成一张后立即显示"
+                : plannedCount > 0
+                  ? "点击“提取截图”开始"
+                  : "正在读取视频时长…"}
+          </div>
+        ) : (
+          <div className={`grid gap-2 p-2 ${twoColumns ? "grid-cols-2" : "grid-cols-1"}`}>
+            {snapshots.map((snapshot) => (
+              <Button
+                key={snapshot.position}
+                type="button"
+                variant="ghost"
+                className="relative h-auto w-full overflow-hidden rounded-md p-0"
+                title={`跳转到 ${formatPlayerTime(snapshot.position)}`}
+                onClick={() => onJump(snapshot.position)}
+              >
+                <img
+                  src={snapshot.url}
+                  alt={`${formatPlayerTime(snapshot.position)} 截图`}
+                  loading="lazy"
+                  decoding="async"
+                  className="aspect-video w-full object-cover"
+                />
+                <span className="absolute bottom-0.5 left-0.5 rounded bg-black/70 px-1 py-0.5 font-mono text-[10px] leading-none text-white">
+                  {formatPlayerTime(snapshot.position)}
+                </span>
+              </Button>
+            ))}
+          </div>
+        )}
+      </ScrollArea>
+    </div>
+  );
+}
+
+function VideoListPane({
+  videos,
+  currentPath,
+  switchingPath,
+  onSelectVideo,
+  active,
+}: {
+  videos: FileEntry[];
+  currentPath: string;
+  switchingPath: string | null;
+  onSelectVideo: (entry: FileEntry) => void;
+  active: boolean;
+}) {
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const initiallyCenteredRef = useRef(false);
+
+  useLayoutEffect(() => {
+    if (!active || initiallyCenteredRef.current) return;
+    const viewport = viewportRef.current;
+    if (!viewport || viewport.clientHeight <= 0) return;
+    const currentItem = viewport.querySelector<HTMLElement>('[data-current-video="true"]');
+    if (!currentItem) return;
+
+    const viewportRect = viewport.getBoundingClientRect();
+    const itemRect = currentItem.getBoundingClientRect();
+    const target = viewport.scrollTop
+      + itemRect.top
+      - viewportRect.top
+      - (viewport.clientHeight - itemRect.height) / 2;
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    viewport.scrollTop = Math.max(0, Math.min(maxScrollTop, target));
+    initiallyCenteredRef.current = true;
+  }, [active, currentPath, videos]);
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 border-b p-3">
+        <div className="text-sm font-medium">同目录视频</div>
+        <div className="mt-0.5 text-xs text-muted-foreground">共 {videos.length} 个视频</div>
+      </div>
+      <ScrollArea viewportRef={viewportRef} className="min-h-0 flex-1">
+        <div className="grid gap-1 p-2">
+          {videos.map((video) => {
+            const current = video.path === currentPath;
+            const switching = video.path === switchingPath;
+            const modifiedAt = formatDate(video.modifiedAt);
+            return (
+              <Button
+                key={video.path}
+                type="button"
+                variant={current ? "secondary" : "ghost"}
+                className="h-auto min-w-0 w-full justify-start gap-2 overflow-hidden px-2 py-2 text-left"
+                aria-current={current ? "true" : undefined}
+                data-current-video={current ? "true" : undefined}
+                disabled={switchingPath !== null}
+                title={video.name}
+                onClick={() => {
+                  if (!current) onSelectVideo(video);
+                }}
+              >
+                {switching ? <LoaderCircle className="animate-spin" /> : current ? <Play /> : null}
+                <span className="w-0 min-w-0 flex-1 overflow-hidden">
+                  <span className="block w-full truncate text-sm font-medium">{video.name}</span>
+                  <span className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span className="shrink-0">{formatSize(video.size)}</span>
+                    <span className="min-w-0 truncate text-right" title={modifiedAt}>{modifiedAt}</span>
+                  </span>
+                </span>
+              </Button>
+            );
+          })}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+}
+
+function VideoPlayerSidebar({
+  className,
+  twoColumns = false,
+  visible = true,
+  tab,
+  onTabChange,
+  onClose,
+  videos,
+  currentPath,
+  switchingPath,
+  onSelectVideo,
+  ...snapshotProps
+}: {
+  className: string;
+  twoColumns?: boolean;
+  visible?: boolean;
+  tab: PlayerSidebarTab;
+  onTabChange: (tab: PlayerSidebarTab) => void;
+  onClose?: () => void;
+  videos: FileEntry[];
+  currentPath: string;
+  switchingPath: string | null;
+  onSelectVideo: (entry: FileEntry) => void;
+} & Omit<Parameters<typeof VideoSnapshotPane>[0], "twoColumns">) {
+  return (
+    <aside
+      className={className}
+      aria-label="播放器侧栏"
+      aria-hidden={!visible}
+      onPointerDown={(event) => event.stopPropagation()}
+      onPointerUp={(event) => event.stopPropagation()}
+      onTouchStart={(event) => event.stopPropagation()}
+      onTouchEnd={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <Tabs
+        value={tab}
+        onValueChange={(value) => onTabChange(value as PlayerSidebarTab)}
+        className="min-h-0 flex-1 gap-0 overflow-hidden"
+      >
+        <div className="flex shrink-0 items-center gap-2 border-b p-2">
+          <TabsList className="grid min-w-0 flex-1 grid-cols-2">
+            <TabsTrigger value="snapshots">时间点截图</TabsTrigger>
+            <TabsTrigger value="videos">视频列表</TabsTrigger>
+          </TabsList>
+          {onClose && (
+            <Button type="button" size="icon-sm" variant="ghost" aria-label="关闭播放器侧栏" onClick={onClose}>
+              <X />
+            </Button>
+          )}
+        </div>
+        <TabsContent value="snapshots" keepMounted className="flex min-h-0 overflow-hidden">
+          <VideoSnapshotPane twoColumns={twoColumns} {...snapshotProps} />
+        </TabsContent>
+        <TabsContent value="videos" keepMounted className="flex min-h-0 overflow-hidden">
+          <VideoListPane
+            videos={videos}
+            currentPath={currentPath}
+            switchingPath={switchingPath}
+            onSelectVideo={onSelectVideo}
+            active={visible && tab === "videos"}
+          />
+        </TabsContent>
+      </Tabs>
+    </aside>
+  );
+}
+
 function VideoPlayer({
   src,
+  remotePath,
+  modifiedAt,
   initialPosition,
   onPersistProgress,
   isAndroid,
+  isMobile,
+  mobileLongPressRate,
   fullscreenHUDEnabled,
   fullscreenHUDSideOffsetPX,
+  directoryVideos,
+  onSelectVideo,
 }: {
   src: string;
+  remotePath: string;
+  modifiedAt: string;
   initialPosition: number;
-  onPersistProgress: (position: number, duration: number) => void;
+  onPersistProgress: (remotePath: string, position: number, duration: number) => void;
   isAndroid: boolean;
+  isMobile: boolean;
+  mobileLongPressRate: number;
   fullscreenHUDEnabled: boolean;
   fullscreenHUDSideOffsetPX: number;
+  directoryVideos: FileEntry[];
+  onSelectVideo: (entry: FileEntry) => Promise<void>;
 }) {
   type GestureMode = "pending" | "seek" | "brightness";
   type AndroidPlayerBridge = {
@@ -300,6 +555,8 @@ function VideoPlayer({
 
   const frameRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const remotePathRef = useRef(remotePath);
+  remotePathRef.current = remotePath;
   const miniProgressRef = useRef<HTMLDivElement | null>(null);
   const gestureFeedbackRef = useRef<HTMLDivElement | null>(null);
   const gestureFeedbackHideTimerRef = useRef<number | null>(null);
@@ -308,13 +565,23 @@ function VideoPlayer({
   const [nativeFullscreen, setNativeFullscreen] = useState(false);
   const nativeFullscreenRef = useRef(false);
   const [webFullscreen, setWebFullscreen] = useState(false);
+  const [fullscreenSidePanelOpen, setFullscreenSidePanelOpen] = useState(false);
+  const [sidePanelTab, setSidePanelTab] = useState<PlayerSidebarTab>("snapshots");
+  const [switchingVideoPath, setSwitchingVideoPath] = useState<string | null>(null);
   const [hudClock, setHUDClock] = useState(() => Date.now());
   const [hudBatteryPercent, setHUDBatteryPercent] = useState<number | null>(null);
   const [hudProgress, setHUDProgress] = useState({ position: initialPosition, duration: 0 });
+  const [videoSnapshots, setVideoSnapshots] = useState<VideoSnapshot[]>([]);
+  const [videoSnapshotsLoading, setVideoSnapshotsLoading] = useState(true);
+  const [videoSnapshotExtracting, setVideoSnapshotExtracting] = useState(false);
+  const [videoSnapshotPlannedCount, setVideoSnapshotPlannedCount] = useState(0);
+  const [videoSnapshotCompletedCount, setVideoSnapshotCompletedCount] = useState(0);
+  const videoSnapshotAbortRef = useRef<AbortController | null>(null);
   const hudSliderDraggingRef = useRef(false);
   const hudGestureDraggingRef = useRef(false);
   const hudSeekPendingRef = useRef(false);
-  const fullscreenHUDVisible = fullscreenHUDEnabled && (nativeFullscreen || webFullscreen);
+  const fullscreenActive = nativeFullscreen || webFullscreen;
+  const fullscreenHUDVisible = fullscreenHUDEnabled && fullscreenActive;
   const gesture = useRef<{
     pointerId: number;
     mode: GestureMode;
@@ -346,6 +613,121 @@ function VideoPlayer({
       // temporarily rejects an explicit request (for example autoplay policy).
     });
   }, [src]);
+
+  useEffect(() => {
+    endedRef.current = false;
+    lastPersistedAt.current = 0;
+    hudSliderDraggingRef.current = false;
+    hudGestureDraggingRef.current = false;
+    hudSeekPendingRef.current = false;
+    setHUDProgress({ position: initialPosition, duration: 0 });
+  }, [initialPosition, src]);
+
+  useEffect(() => {
+    videoSnapshotAbortRef.current?.abort();
+    videoSnapshotAbortRef.current = null;
+    setVideoSnapshotExtracting(false);
+    setVideoSnapshotPlannedCount(0);
+    setVideoSnapshotCompletedCount(0);
+
+    setVideoSnapshotsLoading(true);
+    setVideoSnapshots([]);
+    let disposed = false;
+    const request = AppService.GetVideoSnapshots(remotePath, modifiedAt);
+    void request
+      .then((snapshots) => {
+        if (!disposed) setVideoSnapshots(snapshots ?? []);
+      })
+      .catch((err) => {
+        if (!disposed) toast.add({ title: "读取视频截图失败", description: errorMessage(err), type: "error" });
+      })
+      .finally(() => {
+        if (!disposed) setVideoSnapshotsLoading(false);
+      });
+
+    return () => {
+      disposed = true;
+      request.cancel("video player closed");
+      videoSnapshotAbortRef.current?.abort();
+      videoSnapshotAbortRef.current = null;
+    };
+  }, [modifiedAt, remotePath]);
+
+  useEffect(() => {
+    const plannedTimes = plannedVideoSnapshotTimes(hudProgress.duration);
+    setVideoSnapshotPlannedCount(plannedTimes.length);
+    setVideoSnapshotCompletedCount(
+      plannedTimes.filter((position) => hasVideoSnapshotAt(videoSnapshots, position)).length,
+    );
+  }, [hudProgress.duration, videoSnapshots]);
+
+  const startVideoSnapshotExtraction = useCallback(async () => {
+    if (videoSnapshotsLoading || videoSnapshotExtracting) return;
+    const sourceVideo = videoRef.current;
+    const duration = sourceVideo?.duration ?? 0;
+    if (!Number.isFinite(duration) || duration <= 0) {
+      toast.add({ title: "暂时无法提取截图", description: "视频时长尚未加载完成", type: "error" });
+      return;
+    }
+
+    const plannedTimes = plannedVideoSnapshotTimes(duration);
+    const missingTimes = plannedTimes.filter((position) => !hasVideoSnapshotAt(videoSnapshots, position));
+    const completedCount = plannedTimes.length - missingTimes.length;
+    setVideoSnapshotPlannedCount(plannedTimes.length);
+    setVideoSnapshotCompletedCount(completedCount);
+
+    if (missingTimes.length === 0) return;
+
+    videoSnapshotAbortRef.current?.abort();
+    const controller = new AbortController();
+    videoSnapshotAbortRef.current = controller;
+    setVideoSnapshotExtracting(true);
+
+    try {
+      await extractVideoSnapshots(
+        src,
+        missingTimes,
+        controller.signal,
+        async (snapshot) => {
+          const saveRequest = AppService.SaveVideoSnapshot(remotePath, modifiedAt, snapshot.position, snapshot.dataUrl);
+          const cancelSave = () => saveRequest.cancel("video snapshot extraction aborted");
+          controller.signal.addEventListener("abort", cancelSave, { once: true });
+          try {
+            await saveRequest;
+          } finally {
+            controller.signal.removeEventListener("abort", cancelSave);
+          }
+          if (controller.signal.aborted) return;
+          setVideoSnapshots((current) => (
+            [
+              ...current.filter((item) => Math.abs(item.position - snapshot.position) > 0.001),
+              { position: snapshot.position, url: snapshot.dataUrl },
+            ]
+              .sort((a, b) => a.position - b.position)
+          ));
+        },
+      );
+    } catch (err) {
+      if (!(err instanceof DOMException && err.name === "AbortError") && !controller.signal.aborted) {
+        toast.add({ title: "提取视频截图失败", description: errorMessage(err), type: "error" });
+      }
+    } finally {
+      if (videoSnapshotAbortRef.current === controller) {
+        videoSnapshotAbortRef.current = null;
+        setVideoSnapshotExtracting(false);
+      }
+    }
+  }, [modifiedAt, remotePath, src, videoSnapshotExtracting, videoSnapshots, videoSnapshotsLoading]);
+
+  const stopVideoSnapshotExtraction = useCallback(() => {
+    videoSnapshotAbortRef.current?.abort();
+  }, []);
+
+  const jumpToVideoSnapshot = useCallback((position: number) => {
+    const video = videoRef.current;
+    if (!video || !Number.isFinite(position)) return;
+    video.currentTime = Math.max(0, Math.min(position, Number.isFinite(video.duration) ? video.duration : position));
+  }, []);
 
   const setAndroidFullscreen = useCallback((fullscreen: boolean) => {
     if (!isAndroid) return;
@@ -412,6 +794,12 @@ function VideoPlayer({
     document.addEventListener("fullscreenchange", syncWebFullscreen);
     return () => document.removeEventListener("fullscreenchange", syncWebFullscreen);
   }, [isAndroid]);
+
+  useEffect(() => {
+    if (!fullscreenActive) {
+      setFullscreenSidePanelOpen(false);
+    }
+  }, [fullscreenActive]);
 
   useEffect(() => {
     if (!fullscreenHUDVisible) return;
@@ -532,8 +920,23 @@ function VideoPlayer({
     const duration = video.duration;
     if (!Number.isFinite(position) || !Number.isFinite(duration) || duration <= 0) return;
     lastPersistedAt.current = Date.now();
-    onPersistProgress(position, duration);
+    onPersistProgress(remotePathRef.current, position, duration);
   }, [onPersistProgress]);
+
+  const selectDirectoryVideo = useCallback(async (entry: FileEntry) => {
+    if (entry.path === remotePath || switchingVideoPath !== null) return;
+    const currentVideo = videoRef.current;
+    if (currentVideo) persistProgress(currentVideo);
+    setSwitchingVideoPath(entry.path);
+    try {
+      await onSelectVideo(entry);
+      setSidePanelTab("videos");
+    } catch (err) {
+      toast.add({ title: "切换视频失败", description: errorMessage(err), type: "error" });
+    } finally {
+      setSwitchingVideoPath(null);
+    }
+  }, [onSelectVideo, persistProgress, remotePath, switchingVideoPath]);
 
   const syncHUDWithTimeSlider = useCallback((progress: { position: number; duration: number; dragging: boolean }) => {
     if (!fullscreenHUDVisible) return;
@@ -576,17 +979,30 @@ function VideoPlayer({
 
   useEffect(() => {
     const frame = frameRef.current;
-    const root = frame?.querySelector<HTMLElement>(".media-default-skin");
+    const root = frame?.querySelector<HTMLElement>(".media-player-pane");
     if (!frame || !root) return;
 
     const systemPointerIds = new Set<number>();
     const systemTouchIds = new Set<number>();
     let suppressSystemGestureClickUntil = 0;
+    let suppressLongPressClickUntil = 0;
+    let longPressTimer: number | null = null;
+    let longPress: {
+      pointerId: number;
+      startX: number;
+      startY: number;
+      previousRate: number;
+      active: boolean;
+    } | null = null;
 
     const isControlsTarget = (target: EventTarget | null) => {
       return target instanceof Element && Boolean(target.closest(
-        ".media-controls--root, button, [role='slider'], input, select, textarea, a",
+        ".media-controls--root, .video-player-sidebar--fullscreen, button, [role='slider'], input, select, textarea, a",
       ));
+    };
+
+    const isFullscreenSidePanelTarget = (target: EventTarget | null) => {
+      return target instanceof Element && Boolean(target.closest(".video-player-sidebar--fullscreen"));
     };
 
     const getSystemGestureGuards = () => {
@@ -619,17 +1035,65 @@ function VideoPlayer({
       return relativeY <= guards.top || relativeY >= rect.height - guards.bottom;
     };
 
+    const clearLongPressTimer = () => {
+      if (longPressTimer === null) return;
+      window.clearTimeout(longPressTimer);
+      longPressTimer = null;
+    };
+
+    const resetLongPress = (restoreRate: boolean) => {
+      clearLongPressTimer();
+      const current = longPress;
+      longPress = null;
+      if (!restoreRate || !current?.active) return;
+      const video = videoRef.current;
+      if (video) video.playbackRate = current.previousRate;
+    };
+
+    const formatLongPressRate = (rate: number) => {
+      return `${rate.toFixed(2).replace(/\.?0+$/, "")}×`;
+    };
+
+    const startLongPress = (event: PointerEvent, video: HTMLVideoElement) => {
+      if (!isMobile || event.pointerType === "mouse" || !event.isPrimary || video.paused) return;
+      resetLongPress(true);
+      longPress = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        previousRate: video.playbackRate,
+        active: false,
+      };
+      longPressTimer = window.setTimeout(() => {
+        longPressTimer = null;
+        const current = longPress;
+        const currentVideo = videoRef.current;
+        if (!current || current.pointerId !== event.pointerId || !currentVideo) return;
+        current.previousRate = currentVideo.playbackRate;
+        current.active = true;
+        if (gesture.current?.pointerId === event.pointerId) gesture.current = null;
+        currentVideo.playbackRate = mobileLongPressRate;
+        showGestureFeedback(formatLongPressRate(mobileLongPressRate));
+      }, 500);
+    };
+
     const onPointerDown = (event: PointerEvent) => {
-      if (!isAndroid) return;
       const video = videoRef.current;
       if (!video) return;
+      if (isFullscreenSidePanelTarget(event.target)) {
+        resetLongPress(true);
+        gesture.current = null;
+        hideGestureFeedback();
+        return;
+      }
       const rect = root.getBoundingClientRect();
       const relativeX = event.clientX - rect.left;
       const relativeY = event.clientY - rect.top;
       const guards = getSystemGestureGuards();
-      const startsInSystemGestureZone = nativeFullscreenRef.current
+      const startsInSystemGestureZone = isAndroid && nativeFullscreenRef.current
         && (relativeY <= guards.top || relativeY >= rect.height - guards.bottom);
       if (startsInSystemGestureZone) {
+        resetLongPress(true);
         systemPointerIds.add(event.pointerId);
         gesture.current = null;
         hideGestureFeedback();
@@ -640,6 +1104,8 @@ function VideoPlayer({
         return;
       }
       if (isControlsTarget(event.target)) return;
+      startLongPress(event, video);
+      if (!isAndroid) return;
       // A new gesture owns the feedback lifetime. Cancel the previous release
       // timer immediately so rapid swipe/release/swipe sequences cannot have an
       // old timeout hide the new brightness indicator.
@@ -677,6 +1143,20 @@ function VideoPlayer({
       if (systemPointerIds.has(event.pointerId)) {
         event.stopImmediatePropagation();
         return;
+      }
+      const currentLongPress = longPress;
+      if (currentLongPress?.pointerId === event.pointerId) {
+        const dx = event.clientX - currentLongPress.startX;
+        const dy = event.clientY - currentLongPress.startY;
+        if (currentLongPress.active) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
+        if (Math.hypot(dx, dy) >= 8) {
+          clearLongPressTimer();
+          longPress = null;
+        }
       }
       const current = gesture.current;
       const video = videoRef.current;
@@ -736,6 +1216,27 @@ function VideoPlayer({
         event.stopImmediatePropagation();
         return;
       }
+      const currentLongPress = longPress;
+      if (currentLongPress?.pointerId === event.pointerId) {
+        clearLongPressTimer();
+        longPress = null;
+        if (currentLongPress.active) {
+          const video = videoRef.current;
+          if (video) video.playbackRate = currentLongPress.previousRate;
+          if (gesture.current?.pointerId === event.pointerId) gesture.current = null;
+          try {
+            if (root.hasPointerCapture(event.pointerId)) root.releasePointerCapture(event.pointerId);
+          } catch {
+            // The pointer may already have been released by the WebView.
+          }
+          suppressLongPressClickUntil = performance.now() + 600;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          if (event.type === "pointercancel") hideGestureFeedback();
+          else scheduleGestureFeedbackHide(250);
+          return;
+        }
+      }
       const current = gesture.current;
       if (!current || current.pointerId !== event.pointerId) return;
       gesture.current = null;
@@ -776,6 +1277,7 @@ function VideoPlayer({
 
     const onTouchStart = (event: TouchEvent) => {
       if (!isAndroid || !nativeFullscreenRef.current) return;
+      if (isFullscreenSidePanelTarget(event.target)) return;
       let systemGestureStarted = false;
       for (const touch of Array.from(event.changedTouches)) {
         if (isSystemGestureStart(touch.clientY)) {
@@ -804,9 +1306,15 @@ function VideoPlayer({
     };
 
     const onClick = (event: MouseEvent) => {
-      if (performance.now() >= suppressSystemGestureClickUntil) return;
+      const now = performance.now();
+      if (now >= suppressSystemGestureClickUntil && now >= suppressLongPressClickUntil) return;
       event.preventDefault();
       event.stopImmediatePropagation();
+    };
+
+    const onContextMenu = (event: MouseEvent) => {
+      if (!isMobile || isControlsTarget(event.target)) return;
+      event.preventDefault();
     };
 
     frame.addEventListener("pointerdown", onPointerDown, true);
@@ -818,8 +1326,10 @@ function VideoPlayer({
     frame.addEventListener("touchend", finishTouch, { capture: true, passive: true });
     frame.addEventListener("touchcancel", finishTouch, { capture: true, passive: true });
     frame.addEventListener("click", onClick, true);
+    frame.addEventListener("contextmenu", onContextMenu, true);
 
     return () => {
+      resetLongPress(true);
       clearGestureFeedbackHideTimer();
       frame.removeEventListener("pointerdown", onPointerDown, true);
       frame.removeEventListener("pointermove", onPointerMove, true);
@@ -830,19 +1340,46 @@ function VideoPlayer({
       frame.removeEventListener("touchend", finishTouch, true);
       frame.removeEventListener("touchcancel", finishTouch, true);
       frame.removeEventListener("click", onClick, true);
+      frame.removeEventListener("contextmenu", onContextMenu, true);
     };
-  }, [androidBridge, clearGestureFeedbackHideTimer, fullscreenHUDVisible, hideGestureFeedback, isAndroid, persistProgress, scheduleGestureFeedbackHide, showGestureFeedback]);
+  }, [androidBridge, clearGestureFeedbackHideTimer, fullscreenHUDVisible, hideGestureFeedback, isAndroid, isMobile, mobileLongPressRate, persistProgress, scheduleGestureFeedbackHide, showGestureFeedback]);
 
   return (
-    <div
-      ref={frameRef}
-      className={`video-player-frame${isAndroid ? " video-player-frame--android" : ""}${nativeFullscreen ? " video-player-frame--fullscreen" : ""}`}
-    >
-      <Player.Provider>
-        <DriveVideoSkin
-          nativeFullscreen={isAndroid ? { active: nativeFullscreen, onToggle: toggleAndroidFullscreen } : undefined}
-          onTimeSliderProgress={syncHUDWithTimeSlider}
-        >
+    <div className={`video-player-layout${isMobile ? " video-player-layout--mobile" : " video-player-layout--desktop"}`}>
+      <div
+        ref={frameRef}
+        className={`video-player-frame${isAndroid ? " video-player-frame--android" : ""}${nativeFullscreen ? " video-player-frame--fullscreen" : ""}`}
+      >
+        <Player.Provider>
+          <DriveVideoSkin
+            nativeFullscreen={isAndroid ? { active: nativeFullscreen, onToggle: toggleAndroidFullscreen } : undefined}
+            onTimeSliderProgress={syncHUDWithTimeSlider}
+            sidePanel={fullscreenActive ? (
+              <VideoPlayerSidebar
+                className={`video-player-sidebar video-player-sidebar--fullscreen${fullscreenSidePanelOpen ? "" : " video-player-sidebar--closed"}`}
+                visible={fullscreenSidePanelOpen}
+                tab={sidePanelTab}
+                onTabChange={setSidePanelTab}
+                loading={videoSnapshotsLoading}
+                snapshots={videoSnapshots}
+                extracting={videoSnapshotExtracting}
+                completedCount={videoSnapshotCompletedCount}
+                plannedCount={videoSnapshotPlannedCount}
+                onExtract={() => void startVideoSnapshotExtraction()}
+                onStop={stopVideoSnapshotExtraction}
+                onClose={() => setFullscreenSidePanelOpen(false)}
+                onJump={jumpToVideoSnapshot}
+                videos={directoryVideos}
+                currentPath={remotePath}
+                switchingPath={switchingVideoPath}
+                onSelectVideo={(entry) => void selectDirectoryVideo(entry)}
+              />
+            ) : undefined}
+            sidePanelControl={fullscreenActive ? {
+              active: fullscreenSidePanelOpen,
+              onToggle: () => setFullscreenSidePanelOpen((open) => !open),
+            } : undefined}
+          >
           <Video
             ref={videoRef}
             src={src}
@@ -850,6 +1387,7 @@ function VideoPlayer({
             autoPlay
             onLoadedMetadata={(event) => {
               const video = event.currentTarget;
+              endedRef.current = false;
               hudSliderDraggingRef.current = false;
               hudGestureDraggingRef.current = false;
               hudSeekPendingRef.current = false;
@@ -857,6 +1395,9 @@ function VideoPlayer({
                 video.currentTime = Math.min(initialPosition, Math.max(0, video.duration - 0.1));
               }
               setHUDProgress({ position: video.currentTime, duration: video.duration });
+              if (isAndroid && nativeFullscreenRef.current) {
+                setAndroidFullscreen(true);
+              }
             }}
             onTimeUpdate={(event) => {
               if (fullscreenHUDVisible && !hudSeekPendingRef.current) {
@@ -882,14 +1423,14 @@ function VideoPlayer({
               setHUDProgress({ position: video.duration, duration: video.duration });
               if (Number.isFinite(video.duration) && video.duration > 0) {
                 lastPersistedAt.current = Date.now();
-                onPersistProgress(video.duration, video.duration);
+                onPersistProgress(remotePathRef.current, video.duration, video.duration);
               }
             }}
           />
           <div className="video-mini-progress" aria-hidden="true">
             <div ref={miniProgressRef} className="video-mini-progress__fill" />
           </div>
-          <div ref={gestureFeedbackRef} className="video-gesture-feedback" hidden aria-live="polite" />
+          <div ref={gestureFeedbackRef} className="media-surface video-gesture-feedback" hidden aria-live="polite" />
           {fullscreenHUDVisible && (
             <div
               className="video-fullscreen-hud"
@@ -908,8 +1449,29 @@ function VideoPlayer({
               </span>
             </div>
           )}
-        </DriveVideoSkin>
-      </Player.Provider>
+          </DriveVideoSkin>
+        </Player.Provider>
+      </div>
+
+      <VideoPlayerSidebar
+        className={`video-player-sidebar${fullscreenActive ? " video-player-sidebar--detached-hidden" : ""}`}
+        visible={!fullscreenActive}
+        twoColumns={isMobile}
+        tab={sidePanelTab}
+        onTabChange={setSidePanelTab}
+        loading={videoSnapshotsLoading}
+        snapshots={videoSnapshots}
+        extracting={videoSnapshotExtracting}
+        completedCount={videoSnapshotCompletedCount}
+        plannedCount={videoSnapshotPlannedCount}
+        onExtract={() => void startVideoSnapshotExtraction()}
+        onStop={stopVideoSnapshotExtraction}
+        onJump={jumpToVideoSnapshot}
+        videos={directoryVideos}
+        currentPath={remotePath}
+        switchingPath={switchingVideoPath}
+        onSelectVideo={(entry) => void selectDirectoryVideo(entry)}
+      />
     </div>
   );
 }
@@ -1001,6 +1563,123 @@ function captureVideoThumbnail(src: string, offsetPercent: number, signal: Abort
   });
 }
 
+function plannedVideoSnapshotTimes(duration: number) {
+  if (!Number.isFinite(duration) || duration <= 0) return [];
+  let count = 10;
+  while (count > 1 && duration / (count + 1) < 1) count -= 1;
+  return Array.from({ length: count }, (_, index) => duration * (index + 1) / (count + 1));
+}
+
+function hasVideoSnapshotAt(snapshots: VideoSnapshot[], position: number) {
+  return snapshots.some((snapshot) => Math.abs(snapshot.position - position) <= 0.05);
+}
+
+function videoSnapshotAbortError() {
+  return new DOMException("Video snapshot extraction aborted", "AbortError");
+}
+
+function waitForVideoSnapshotMetadata(video: HTMLVideoElement, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(videoSnapshotAbortError());
+      return;
+    }
+    let timeout = 0;
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      signal.removeEventListener("abort", onAbort);
+      video.removeEventListener("loadedmetadata", onLoadedMetadata);
+      video.removeEventListener("error", onError);
+    };
+    const finish = (error?: unknown) => {
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    const onAbort = () => finish(videoSnapshotAbortError());
+    const onLoadedMetadata = () => finish();
+    const onError = () => finish(new Error("视频截图源加载失败"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
+    video.addEventListener("error", onError, { once: true });
+    timeout = window.setTimeout(() => finish(new Error("视频截图源加载超时")), 30_000);
+  });
+}
+
+function seekVideoForSnapshot(video: HTMLVideoElement, position: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(videoSnapshotAbortError());
+      return;
+    }
+    let timeout = 0;
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      signal.removeEventListener("abort", onAbort);
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+    };
+    const finish = (error?: unknown) => {
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    const onAbort = () => finish(videoSnapshotAbortError());
+    const onSeeked = () => finish();
+    const onError = () => finish(new Error("视频截图定位失败"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    video.addEventListener("seeked", onSeeked, { once: true });
+    video.addEventListener("error", onError, { once: true });
+    timeout = window.setTimeout(() => finish(new Error("视频截图定位超时")), 30_000);
+    video.currentTime = position;
+  });
+}
+
+async function extractVideoSnapshots(
+  src: string,
+  positions: number[],
+  signal: AbortSignal,
+  onSnapshot: (snapshot: { position: number; dataUrl: string }) => Promise<void>,
+) {
+  const video = document.createElement("video");
+  video.crossOrigin = "anonymous";
+  video.preload = "auto";
+  video.muted = true;
+  video.playsInline = true;
+
+  const dispose = () => {
+    video.removeAttribute("src");
+    video.load();
+  };
+  const onAbort = () => dispose();
+  signal.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    video.src = src;
+    video.load();
+    await waitForVideoSnapshotMetadata(video, signal);
+    if (!video.videoWidth || !video.videoHeight) throw new Error("视频没有可截图的原始画面");
+    if (positions.length === 0) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("无法创建视频截图画布");
+
+    for (const position of positions) {
+      if (signal.aborted) throw videoSnapshotAbortError();
+      await seekVideoForSnapshot(video, position, signal);
+      if (signal.aborted) throw videoSnapshotAbortError();
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      await onSnapshot({ position, dataUrl: canvas.toDataURL("image/png") });
+    }
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    dispose();
+  }
+}
+
 function formatSize(bytes: number) {
   if (!bytes) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -1031,6 +1710,14 @@ function normalizePath(value: string) {
   const trimmed = value.trim();
   if (!trimmed || trimmed === "/") return "/";
   return `/${trimmed.replace(/\\/g, "/").replace(/^\/+/, "")}`.replace(/\/{2,}/g, "/");
+}
+
+function parentDirectory(value: string) {
+  const normalized = normalizePath(value);
+  if (normalized === "/") return "/";
+  const parts = normalized.split("/").filter(Boolean);
+  parts.pop();
+  return parts.length === 0 ? "/" : `/${parts.join("/")}`;
 }
 
 function breadcrumbs(value: string) {
@@ -1327,6 +2014,7 @@ function App() {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [thumbnailImages, setThumbnailImages] = useState<Record<string, string>>({});
   const [thumbnailStats, setThumbnailStats] = useState<ThumbnailCacheStats>({ count: 0, totalBytes: 0 });
+  const [videoSnapshotStats, setVideoSnapshotStats] = useState<VideoSnapshotCacheStats>({ count: 0, totalBytes: 0 });
   const [playbackProgressStats, setPlaybackProgressStats] = useState<PlaybackProgressStats>({ count: 0, totalBytes: 0 });
   const [quarkIDCacheStats, setQuarkIDCacheStats] = useState<QuarkIDCacheStats>({ count: 0 });
   const [providerBrowseStats, setProviderBrowseStats] = useState<Record<CloudProvider, ProviderBrowseStats>>({
@@ -1352,6 +2040,7 @@ function App() {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [loginProvider, setLoginProvider] = useState<CloudProvider | null>(null);
   const [activeVideo, setActiveVideo] = useState<ActiveVideo | null>(null);
+  const [videoDialogOpen, setVideoDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [webdavCacheTTLInput, setWebDAVCacheTTLInput] = useState("30");
@@ -1362,8 +2051,11 @@ function App() {
   const [thumbnailMaxAgeInput, setThumbnailMaxAgeInput] = useState("30");
   const [thumbnailMaxSizeInput, setThumbnailMaxSizeInput] = useState("512");
   const [thumbnailOffsetPercentInput, setThumbnailOffsetPercentInput] = useState("10");
+  const [videoSnapshotMaxAgeInput, setVideoSnapshotMaxAgeInput] = useState("30");
+  const [videoSnapshotMaxSizeInput, setVideoSnapshotMaxSizeInput] = useState("1024");
   const [playbackMaxAgeInput, setPlaybackMaxAgeInput] = useState("365");
   const [playbackMaxSizeInput, setPlaybackMaxSizeInput] = useState("16");
+  const [mobileLongPressRateInput, setMobileLongPressRateInput] = useState("3");
   const [fullscreenHUDEnabledInput, setFullscreenHUDEnabledInput] = useState(false);
   const [fullscreenHUDSideOffsetInput, setFullscreenHUDSideOffsetInput] = useState("0");
   const [fullscreenHUDToggleSaving, setFullscreenHUDToggleSaving] = useState(false);
@@ -1372,6 +2064,7 @@ function App() {
   const directoryAbortController = useRef<AbortController | null>(null);
   const thumbnailAbortController = useRef<AbortController | null>(null);
   const directoryScrollViewportRef = useRef<HTMLDivElement | null>(null);
+  const breadcrumbScrollRef = useRef<HTMLElement | null>(null);
   const providerBrowseSessions = useRef<Record<CloudProvider, ProviderBrowseSession>>({
     "123": createProviderBrowseSession(),
     quark: createProviderBrowseSession(),
@@ -1420,8 +2113,11 @@ function App() {
     setThumbnailMaxAgeInput(String(nextState.thumbnailMaxAgeDays));
     setThumbnailMaxSizeInput(String(nextState.thumbnailMaxSizeMB));
     setThumbnailOffsetPercentInput(String(nextState.thumbnailOffsetPercent));
+    setVideoSnapshotMaxAgeInput(String(nextState.videoSnapshotMaxAgeDays));
+    setVideoSnapshotMaxSizeInput(String(nextState.videoSnapshotMaxSizeMB));
     setPlaybackMaxAgeInput(String(nextState.playbackMaxAgeDays));
     setPlaybackMaxSizeInput(String(nextState.playbackMaxSizeMB));
+    setMobileLongPressRateInput(String(nextState.mobileLongPressRate));
     setFullscreenHUDEnabledInput(nextState.fullscreenHudEnabled);
     setFullscreenHUDSideOffsetInput(String(nextState.fullscreenHudSideOffsetPx));
   }, []);
@@ -1491,6 +2187,30 @@ function App() {
     viewport.scrollTop = pending.scrollTop;
     pendingDirectoryScrollRestore.current = null;
   }, [currentPath, entries, loading]);
+
+  useLayoutEffect(() => {
+    let settleFrame = 0;
+    const layoutFrame = window.requestAnimationFrame(() => {
+      const breadcrumb = breadcrumbScrollRef.current;
+      if (!breadcrumb) return;
+
+      breadcrumb.scrollLeft = Math.max(0, breadcrumb.scrollWidth - breadcrumb.clientWidth);
+
+      settleFrame = window.requestAnimationFrame(() => {
+        const settledBreadcrumb = breadcrumbScrollRef.current;
+        if (!settledBreadcrumb) return;
+        settledBreadcrumb.scrollLeft = Math.max(
+          0,
+          settledBreadcrumb.scrollWidth - settledBreadcrumb.clientWidth,
+        );
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(layoutFrame);
+      if (settleFrame) window.cancelAnimationFrame(settleFrame);
+    };
+  }, [currentPath]);
 
   const getCachedDirectory = useCallback((remotePath: string) => {
     const now = Date.now();
@@ -1654,12 +2374,26 @@ function App() {
     const current = currentPathRef.current;
     if (normalized === current) return;
 
-    const back = directoryBackHistory.current;
-    back.push(current);
-    if (back.length > DIRECTORY_HISTORY_LIMIT) back.shift();
-    directoryForwardHistory.current.length = 0;
+    if (isMobile) {
+      directoryBackHistory.current.length = 0;
+      directoryForwardHistory.current.length = 0;
+    } else {
+      const back = directoryBackHistory.current;
+      back.push(current);
+      if (back.length > DIRECTORY_HISTORY_LIMIT) back.shift();
+      directoryForwardHistory.current.length = 0;
+    }
     syncDirectoryHistoryState();
     void loadDirectory(normalized);
+  }, [isMobile, loadDirectory, syncDirectoryHistoryState]);
+
+  const goParentDirectory = useCallback(() => {
+    const current = currentPathRef.current;
+    if (current === "/") return;
+    directoryBackHistory.current.length = 0;
+    directoryForwardHistory.current.length = 0;
+    syncDirectoryHistoryState();
+    void loadDirectory(parentDirectory(current));
   }, [loadDirectory, syncDirectoryHistoryState]);
 
   const goBackDirectory = useCallback(() => {
@@ -1782,6 +2516,14 @@ function App() {
     }
   }, []);
 
+  const refreshVideoSnapshotStats = useCallback(async () => {
+    try {
+      setVideoSnapshotStats(await AppService.GetVideoSnapshotCacheStats());
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }, []);
+
   const refreshPlaybackProgressStats = useCallback(async () => {
     try {
       setPlaybackProgressStats(await AppService.GetPlaybackProgressStats());
@@ -1856,6 +2598,7 @@ function App() {
     const nextState = await AppService.Logout();
     resetProviderBrowseSession(loggedOutProvider);
     syncBackendState(nextState);
+    setVideoDialogOpen(false);
     setActiveVideo(null);
     setError("");
 
@@ -1882,6 +2625,22 @@ function App() {
     setQuarkIDCacheStats({ count: 0 });
   };
 
+  const activateVideoEntry = async (entry: FileEntry) => {
+    const [url, progress] = await Promise.all([
+      AppService.GetPlaybackURL(entry.path),
+      AppService.GetPlaybackProgress(entry.path).catch(() => null),
+    ]);
+    setActiveVideo({
+      name: entry.name,
+      path: entry.path,
+      modifiedAt: entry.modifiedAt,
+      url,
+      resumePosition: progress?.found ? progress.position : 0,
+    });
+    setVideoDialogOpen(true);
+    window.setTimeout(() => void refreshProviderCaches(), 600);
+  };
+
   const openEntry = async (entry: FileEntry) => {
     if (entry.isDirectory) {
       navigateDirectory(entry.path);
@@ -1890,27 +2649,14 @@ function App() {
     if (!isVideo(entry)) return;
     try {
       thumbnailAbortController.current?.abort();
-      const [url, progress] = await Promise.all([
-        AppService.GetPlaybackURL(entry.path),
-        AppService.GetPlaybackProgress(entry.path).catch(() => null),
-      ]);
-      setActiveVideo({
-        name: entry.name,
-        path: entry.path,
-        url,
-        resumePosition: progress?.found ? progress.position : 0,
-      });
-      window.setTimeout(() => void refreshProviderCaches(), 600);
+      await activateVideoEntry(entry);
     } catch (err) {
       setError(errorMessage(err));
     }
   };
 
   const closeVideo = () => {
-    setActiveVideo(null);
-    if (!loading && entries.length > 0) {
-      startThumbnailLoading(entries, directoryRequestId.current);
-    }
+    setVideoDialogOpen(false);
   };
 
   const closeSettings = useCallback(() => {
@@ -2073,6 +2819,35 @@ function App() {
     }
   };
 
+  const saveVideoSnapshotSettings = async () => {
+    if (!state) return;
+    const maxAgeDays = Number.parseInt(videoSnapshotMaxAgeInput, 10);
+    const maxSizeMB = Number.parseInt(videoSnapshotMaxSizeInput, 10);
+    if (!Number.isInteger(maxAgeDays) || maxAgeDays < 1 || maxAgeDays > 3650) {
+      toast.add({ title: "设置无效", description: "视频截图保留时间必须在 1 到 3650 天之间", type: "error" });
+      return;
+    }
+    if (!Number.isInteger(maxSizeMB) || maxSizeMB < 64 || maxSizeMB > 10240) {
+      toast.add({ title: "设置无效", description: "视频截图缓存上限必须在 64 到 10240 MB 之间", type: "error" });
+      return;
+    }
+    try {
+      const nextState = await AppService.SetVideoSnapshotSettings(maxAgeDays, maxSizeMB);
+      syncBackendState(nextState);
+      await refreshVideoSnapshotStats();
+    } catch (err) {
+      toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
+    }
+  };
+
+  const clearVideoSnapshotCache = async () => {
+    try {
+      setVideoSnapshotStats(await AppService.ClearVideoSnapshotCache());
+    } catch (err) {
+      toast.add({ title: "清空失败", description: errorMessage(err), type: "error" });
+    }
+  };
+
   const savePlaybackProgressSettings = async () => {
     const maxAgeDays = Number.parseInt(playbackMaxAgeInput, 10);
     const maxSizeMB = Number.parseInt(playbackMaxSizeInput, 10);
@@ -2110,14 +2885,30 @@ function App() {
     }
   };
 
+  const saveMobileLongPressRate = async () => {
+    if (!state) return;
+    const rate = Number.parseFloat(mobileLongPressRateInput);
+    if (!Number.isFinite(rate) || rate < 1 || rate > 8) {
+      toast.add({ title: "设置无效", description: "移动端长按倍速必须在 1 到 8 倍之间", type: "error" });
+      return;
+    }
+    try {
+      const nextState = await AppService.SetMobileLongPressRate(rate);
+      syncBackendState(nextState);
+    } catch (err) {
+      toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
+    }
+  };
+
   const saveFullscreenHUDSettings = async () => {
+    if (!state) return;
     const offsetPX = Number.parseInt(fullscreenHUDSideOffsetInput, 10);
     if (!Number.isInteger(offsetPX) || offsetPX < 0 || offsetPX > 200) {
       toast.add({ title: "设置无效", description: "全屏信息左右偏移必须在 0 到 200 px 之间", type: "error" });
       return;
     }
     try {
-      const nextState = await AppService.SetFullscreenHUDSettings(fullscreenHUDEnabledInput, offsetPX);
+      const nextState = await AppService.SetFullscreenHUDSettings(state.fullscreenHudEnabled, offsetPX);
       syncBackendState(nextState);
     } catch (err) {
       toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
@@ -2165,8 +2956,8 @@ function App() {
         closeSettings();
         return true;
       }
-      if (canGoBack) {
-        goBackDirectory();
+      if (currentPathRef.current !== "/") {
+        goParentDirectory();
         return true;
       }
       return false;
@@ -2175,13 +2966,14 @@ function App() {
     return () => {
       delete backWindow.__drivePlayerHandleBack;
     };
-  }, [activeVideo, canGoBack, closeSettings, goBackDirectory, isAndroid, loginProvider, showLogoutConfirm, showSettings]);
+  }, [activeVideo, closeSettings, goParentDirectory, isAndroid, loginProvider, showLogoutConfirm, showSettings]);
 
   const pathParts = useMemo(() => breadcrumbs(currentPath), [currentPath]);
   const visibleEntries = useMemo(
     () => entries.filter((entry) => entry.isDirectory || isVideo(entry)),
     [entries],
   );
+  const directoryVideos = useMemo(() => entries.filter(isVideo), [entries]);
 
   if (restoringSession || !state) {
     return (
@@ -2215,9 +3007,14 @@ function App() {
     Number.parseInt(thumbnailMaxAgeInput, 10) !== state.thumbnailMaxAgeDays ||
     Number.parseInt(thumbnailMaxSizeInput, 10) !== state.thumbnailMaxSizeMB ||
     Number.parseInt(thumbnailOffsetPercentInput, 10) !== state.thumbnailOffsetPercent;
+  const videoSnapshotSettingsChanged =
+    Number.parseInt(videoSnapshotMaxAgeInput, 10) !== state.videoSnapshotMaxAgeDays ||
+    Number.parseInt(videoSnapshotMaxSizeInput, 10) !== state.videoSnapshotMaxSizeMB;
   const playbackProgressSettingsChanged =
     Number.parseInt(playbackMaxAgeInput, 10) !== state.playbackMaxAgeDays ||
     Number.parseInt(playbackMaxSizeInput, 10) !== state.playbackMaxSizeMB;
+  const mobileLongPressRateChanged =
+    Number.parseFloat(mobileLongPressRateInput) !== state.mobileLongPressRate;
   const fullscreenHUDSettingsChanged =
     Number.parseInt(fullscreenHUDSideOffsetInput, 10) !== state.fullscreenHudSideOffsetPx;
 
@@ -2263,6 +3060,7 @@ function App() {
               void refreshProviderCaches();
               refreshProviderBrowseStats();
               void refreshThumbnailStats();
+              void refreshVideoSnapshotStats();
               void refreshPlaybackProgressStats();
               void refreshQuarkIDCacheStats();
             }}
@@ -2301,24 +3099,28 @@ function App() {
         <Card className="flex h-full min-h-0 flex-col gap-0 py-0">
               <CardHeader className="border-b px-3 py-3 sm:px-6">
                 <div className="flex min-w-0 items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    disabled={!canGoBack}
-                    onClick={goBackDirectory}
-                    aria-label="后退"
-                  >
-                    <ArrowLeft />
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    disabled={!canGoForward}
-                    onClick={goForwardDirectory}
-                    aria-label="前进"
-                  >
-                    <ArrowRight />
-                  </Button>
+                  {!isMobile && (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        disabled={!canGoBack}
+                        onClick={goBackDirectory}
+                        aria-label="后退"
+                      >
+                        <ArrowLeft />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        disabled={!canGoForward}
+                        onClick={goForwardDirectory}
+                        aria-label="前进"
+                      >
+                        <ArrowRight />
+                      </Button>
+                    </>
+                  )}
                   <Button
                     variant="outline"
                     size="icon"
@@ -2327,13 +3129,17 @@ function App() {
                   >
                     <RefreshCw className={loading ? "animate-spin" : ""} />
                   </Button>
-                  <Breadcrumb className="min-w-0 flex-1 overflow-hidden px-1">
-                    <BreadcrumbList className="flex-nowrap overflow-hidden">
-                      <BreadcrumbItem>
+                  <Breadcrumb
+                    ref={breadcrumbScrollRef}
+                    className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-1"
+                  >
+                    <BreadcrumbList className="w-max min-w-full flex-nowrap whitespace-nowrap">
+                      <BreadcrumbItem className="shrink-0">
                         {currentPath === "/" ? (
-                          <BreadcrumbPage>根目录</BreadcrumbPage>
+                          <BreadcrumbPage className="whitespace-nowrap">根目录</BreadcrumbPage>
                         ) : (
                           <BreadcrumbLink
+                            className="whitespace-nowrap"
                             render={<button type="button" />}
                             onClick={() => navigateDirectory("/")}
                           >
@@ -2343,12 +3149,13 @@ function App() {
                       </BreadcrumbItem>
                       {pathParts.map((part, index) => (
                         <Fragment key={part.path}>
-                          <BreadcrumbSeparator />
-                          <BreadcrumbItem>
+                          <BreadcrumbSeparator className="shrink-0" />
+                          <BreadcrumbItem className="shrink-0">
                             {index === pathParts.length - 1 ? (
-                              <BreadcrumbPage>{part.name}</BreadcrumbPage>
+                              <BreadcrumbPage className="whitespace-nowrap">{part.name}</BreadcrumbPage>
                             ) : (
                               <BreadcrumbLink
+                                className="whitespace-nowrap"
                                 render={<button type="button" />}
                                 onClick={() => navigateDirectory(part.path)}
                               >
@@ -2466,7 +3273,6 @@ function App() {
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
-              variant="destructive"
               onClick={() => {
                 setShowLogoutConfirm(false);
                 void logout();
@@ -2484,7 +3290,10 @@ function App() {
           if (!open) closeSettings();
         }}
       >
-        <DialogContent className="flex h-dvh w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none p-0 sm:h-[90vh] sm:w-[92vw] sm:max-w-4xl sm:rounded-xl">
+        <DialogContent
+          overlayClassName="bg-transparent supports-backdrop-filter:backdrop-blur-none sm:bg-black/10 sm:supports-backdrop-filter:backdrop-blur-xs"
+          className="settings-dialog-content flex h-dvh w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none p-0 sm:h-[90vh] sm:w-[92vw] sm:max-w-4xl sm:rounded-xl"
+        >
           <DialogHeader className="shrink-0 border-b px-4 py-4 sm:px-6">
             <DialogTitle className="pr-8">设置</DialogTitle>
           </DialogHeader>
@@ -2850,6 +3659,66 @@ function App() {
 
               <Card>
                 <CardHeader>
+                  <CardTitle>视频时间点截图</CardTitle>
+                  <CardDescription>
+                    播放器始终提供时间点截图侧栏，可手动提取最多 10 张原始分辨率 PNG 截图。截图按视频时长等分，点击截图可直接跳转到对应时间点。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="grid gap-2">
+                      <Label htmlFor="video-snapshot-max-age">最长保留时间（天）</Label>
+                      <Input
+                        id="video-snapshot-max-age"
+                        type="number"
+                        min={1}
+                        max={3650}
+                        value={videoSnapshotMaxAgeInput}
+                        onChange={(event) => setVideoSnapshotMaxAgeInput(event.target.value)}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="video-snapshot-max-size">总大小上限（MB）</Label>
+                      <Input
+                        id="video-snapshot-max-size"
+                        type="number"
+                        min={64}
+                        max={10240}
+                        value={videoSnapshotMaxSizeInput}
+                        onChange={(event) => setVideoSnapshotMaxSizeInput(event.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <Button
+                    onClick={() => void saveVideoSnapshotSettings()}
+                    disabled={!videoSnapshotSettingsChanged}
+                  >
+                    保存
+                  </Button>
+                  <Separator />
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <span className="text-muted-foreground">空间占用</span>
+                      <Badge variant="outline">
+                        {videoSnapshotStats.totalBytes === 0 ? "0 B" : formatSize(videoSnapshotStats.totalBytes)} / {state.videoSnapshotMaxSizeMB} MB
+                      </Badge>
+                      <Badge variant="outline">{videoSnapshotStats.count} 张</Badge>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void clearVideoSnapshotCache()}
+                      disabled={videoSnapshotStats.count === 0}
+                    >
+                      <Trash2 />
+                      清空视频截图
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
                   <CardTitle>播放进度</CardTitle>
                   <CardDescription>
                     按账号和视频路径持久化播放断点。播放中定期保存，暂停或关闭播放器时立即保存；接近播放完成时自动删除断点，下次从头播放。
@@ -2910,13 +3779,42 @@ function App() {
 
               <Card>
                 <CardHeader>
+                  <CardTitle>移动端长按倍速</CardTitle>
+                  <CardDescription>
+                    在视频画面的非控件区域长按约 0.5 秒后临时切换到设定倍速，松手立即恢复长按前的播放速度。仅移动端生效。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid max-w-xs gap-2">
+                    <Label htmlFor="mobile-long-press-rate">长按倍速</Label>
+                    <Input
+                      id="mobile-long-press-rate"
+                      type="number"
+                      min={1}
+                      max={8}
+                      step={0.25}
+                      value={mobileLongPressRateInput}
+                      onChange={(event) => setMobileLongPressRateInput(event.target.value)}
+                    />
+                  </div>
+                  <Button
+                    onClick={() => void saveMobileLongPressRate()}
+                    disabled={!mobileLongPressRateChanged}
+                  >
+                    保存
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
                   <CardTitle>全屏顶部信息</CardTitle>
                   <CardDescription>
                     进入全屏后，左上角用一个标签显示时间和电量百分比，右上角显示当前播放进度。标签始终贴着顶部，左右偏移只调整距屏幕两侧的距离。
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="flex max-w-xs items-center justify-between gap-4">
+                  <div className="flex w-full items-center justify-between gap-4">
                     <Label htmlFor="fullscreen-hud-enabled">显示顶部信息</Label>
                     <Switch
                       id="fullscreen-hud-enabled"
@@ -2926,6 +3824,7 @@ function App() {
                       onCheckedChange={(checked) => void setFullscreenHUDEnabled(checked)}
                     />
                   </div>
+                  <Separator />
                   <div className="grid max-w-xs gap-2">
                     <Label htmlFor="fullscreen-hud-side-offset">左右偏移（px）</Label>
                     <Input
@@ -2933,15 +3832,13 @@ function App() {
                       type="number"
                       min={0}
                       max={200}
-                      className="transition-none"
                       value={fullscreenHUDSideOffsetInput}
                       onChange={(event) => setFullscreenHUDSideOffsetInput(event.target.value)}
-                      disabled={!fullscreenHUDEnabledInput}
                     />
                   </div>
                   <Button
                     onClick={() => void saveFullscreenHUDSettings()}
-                    disabled={!fullscreenHUDEnabledInput || !fullscreenHUDSettingsChanged}
+                    disabled={!fullscreenHUDSettingsChanged}
                   >
                     保存
                   </Button>
@@ -2953,7 +3850,7 @@ function App() {
                   <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:gap-4">
                     <div className="space-y-1.5">
                       <CardTitle>本地存储</CardTitle>
-                      <CardDescription>应用配置、视频缩略图和播放进度都保存在这个应用数据目录下。</CardDescription>
+                      <CardDescription>应用配置、视频缩略图、视频时间点截图和播放进度都保存在这个应用数据目录下。</CardDescription>
                     </div>
                     {!isMobile && (
                       <Button variant="outline" size="sm" onClick={() => void openStorageDirectory()}>
@@ -2975,6 +3872,10 @@ function App() {
                   <div className="grid gap-1">
                     <span className="text-muted-foreground">缩略图目录</span>
                     <code className="break-all rounded bg-muted px-2 py-1">{state.thumbnailDirectory}</code>
+                  </div>
+                  <div className="grid gap-1">
+                    <span className="text-muted-foreground">视频截图目录</span>
+                    <code className="break-all rounded bg-muted px-2 py-1">{state.videoSnapshotDirectory}</code>
                   </div>
                   <div className="grid gap-1">
                     <span className="text-muted-foreground">播放进度文件</span>
@@ -2999,7 +3900,7 @@ function App() {
       )}
 
       <Dialog
-        open={Boolean(activeVideo)}
+        open={videoDialogOpen}
         onOpenChange={(open, eventDetails) => {
           if (
             !open &&
@@ -3012,9 +3913,19 @@ function App() {
         }}
       >
         <DialogContent
+          overlayClassName={isMobile
+            ? "video-dialog-overlay--mobile"
+            : undefined}
           className={isAndroid
-            ? "flex h-dvh w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none p-0 sm:max-w-none"
-            : "flex h-dvh w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none p-0 sm:h-[90vh] sm:w-[95vw] sm:max-w-[95vw] sm:rounded-xl"}
+            ? "video-dialog-content video-dialog-content--mobile flex h-dvh w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none p-0 sm:max-w-none"
+            : `video-dialog-content${isMobile ? " video-dialog-content--mobile" : ""} flex h-dvh w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none p-0 sm:h-[90vh] sm:w-[95vw] sm:max-w-[95vw] sm:rounded-xl`}
+          onAnimationEnd={(event) => {
+            if (event.target !== event.currentTarget || videoDialogOpen) return;
+            setActiveVideo(null);
+            if (!loading && entries.length > 0) {
+              startThumbnailLoading(entries, directoryRequestId.current);
+            }
+          }}
         >
           <DialogHeader className="border-b px-3 py-3 sm:px-5 sm:py-4">
             <DialogTitle className="truncate pr-8">{activeVideo?.name ?? "视频播放"}</DialogTitle>
@@ -3025,15 +3936,18 @@ function App() {
           <div className="min-h-0 flex-1 bg-black">
             {activeVideo && (
               <VideoPlayer
-                key={activeVideo.url}
                 src={activeVideo.url}
+                remotePath={activeVideo.path}
+                modifiedAt={activeVideo.modifiedAt}
                 initialPosition={activeVideo.resumePosition}
                 isAndroid={isAndroid}
+                isMobile={isMobile}
+                mobileLongPressRate={state.mobileLongPressRate}
                 fullscreenHUDEnabled={state.fullscreenHudEnabled}
                 fullscreenHUDSideOffsetPX={state.fullscreenHudSideOffsetPx}
-                onPersistProgress={(position, duration) => {
-                  persistPlaybackProgress(activeVideo.path, position, duration);
-                }}
+                directoryVideos={directoryVideos}
+                onSelectVideo={activateVideoEntry}
+                onPersistProgress={persistPlaybackProgress}
               />
             )}
           </div>
