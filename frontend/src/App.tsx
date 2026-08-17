@@ -2943,8 +2943,8 @@ function App() {
         setShowLogoutConfirm(false);
         return true;
       }
-      if (backWindow.__drivePlayerExitFullscreen?.()) return true;
-      if (activeVideo) {
+      if (videoDialogOpen && backWindow.__drivePlayerExitFullscreen?.()) return true;
+      if (videoDialogOpen) {
         closeVideo();
         return true;
       }
@@ -2966,7 +2966,7 @@ function App() {
     return () => {
       delete backWindow.__drivePlayerHandleBack;
     };
-  }, [activeVideo, closeSettings, goParentDirectory, isAndroid, loginProvider, showLogoutConfirm, showSettings]);
+  }, [closeSettings, goParentDirectory, isAndroid, loginProvider, showLogoutConfirm, showSettings, videoDialogOpen]);
 
   const pathParts = useMemo(() => breadcrumbs(currentPath), [currentPath]);
   const visibleEntries = useMemo(

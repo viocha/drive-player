@@ -555,9 +555,9 @@ public class WailsBridge {
     }
 
     /**
-     * Set the device-wide system brightness in 5-percent steps. This deliberately
-     * writes Settings.System.SCREEN_BRIGHTNESS instead of applying a per-window
-     * brightness override, so the change remains visible outside this app too.
+     * Set the device-wide system brightness in 5-percent steps without changing
+     * the user's brightness mode. In particular, keep adaptive/automatic
+     * brightness enabled when it is already enabled.
      */
     public void setBrightness(final int pct) {
         mainHandler.post(() -> {
@@ -575,10 +575,6 @@ public class WailsBridge {
                 lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
                 activity.getWindow().setAttributes(lp);
 
-                Settings.System.putInt(
-                        activity.getContentResolver(),
-                        Settings.System.SCREEN_BRIGHTNESS_MODE,
-                        Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
                 Settings.System.putInt(
                         activity.getContentResolver(),
                         Settings.System.SCREEN_BRIGHTNESS,
