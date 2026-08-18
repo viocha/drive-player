@@ -13,8 +13,8 @@ export type {
     PlaybackProgressStats,
     QuarkIDCacheStats,
     RedirectCacheEntry,
-    ThumbnailCacheStats,
-    ThumbnailResult,
+    VideoMetadataCacheStats,
+    VideoMetadataResult,
     VideoSnapshot,
     VideoSnapshotCacheStats
 } from "./models.js";

@@ -5,6 +5,8 @@ import {
   type PropsWithChildren,
   type ReactNode,
   useEffect,
+  useRef,
+  useState,
 } from "react";
 import { PanelRight } from "lucide-react";
 import {
@@ -46,6 +48,7 @@ import {
   useCaptionsOptions,
   Container,
   Controls,
+  createTapGesture,
   ErrorDialog,
   FullscreenButton,
   Gesture,
@@ -57,12 +60,15 @@ import {
   Popover,
   useQualityOptions,
   SeekIndicator,
+  selectControls,
+  selectPlayback,
   Slider,
   StatusAnnouncer,
   StatusIndicator,
   Time,
   TimeSlider,
   Tooltip,
+  useContainer,
   useHotkey,
   usePlayer,
   useTranslator,
@@ -397,6 +403,7 @@ export type DriveVideoSkinProps = PropsWithChildren<{
     active: boolean;
     onToggle: () => void;
   };
+  mobile?: boolean;
 }>;
 
 function TimeSliderProgressSync({
@@ -470,11 +477,42 @@ export function DriveVideoSkin({
   className,
   style,
   nativeFullscreen,
+  mobile = false,
   onTimeSliderProgress,
   sidePanel,
   sidePanelControl,
 }: DriveVideoSkinProps): ReactNode {
   const sidePanelOpen = sidePanelControl?.active === true;
+  const controls = usePlayer(selectControls);
+  const playback = usePlayer(selectPlayback);
+  const container = useContainer();
+  const controlsRef = useRef(controls);
+  const playbackPausedRef = useRef(playback?.paused ?? false);
+  const [pausedTouchControlsVisible, setPausedTouchControlsVisible] = useState<boolean | null>(null);
+  controlsRef.current = controls;
+  playbackPausedRef.current = playback?.paused ?? false;
+
+  useEffect(() => {
+    if (!container) return;
+    return createTapGesture(
+      container,
+      () => {
+        const currentControls = controlsRef.current;
+        if (!currentControls) return;
+        if (mobile && playbackPausedRef.current) {
+          setPausedTouchControlsVisible((current) => !(current ?? currentControls.userActive));
+          return;
+        }
+        currentControls.toggleControls();
+      },
+      { pointer: "touch", action: "toggleControls" },
+    );
+  }, [container, mobile]);
+
+  useEffect(() => {
+    if (!playback?.paused) setPausedTouchControlsVisible(null);
+  }, [playback?.paused]);
+
   return (
     <Container
       className={`media-default-skin media-default-skin--video${sidePanelOpen ? " media-default-skin--side-panel-open" : ""} ${className ?? ""}`}
@@ -505,7 +543,24 @@ export function DriveVideoSkin({
         </ErrorDialog.Popup>
       </ErrorDialog.Root>
 
-      <Controls.Root className="media-surface media-controls media-controls--root">
+      <Controls.Root
+        className="media-surface media-controls media-controls--root"
+        render={(props, state) => (
+          <div
+            {...props}
+            data-visible={
+              state.visible
+              && (
+                mobile && playback?.paused && pausedTouchControlsVisible !== null
+                  ? pausedTouchControlsVisible
+                  : state.userActive
+              )
+                ? ""
+                : undefined
+            }
+          />
+        )}
+      >
         <Tooltip.Provider>
           <div className="media-surface media-controls media-controls--primary">
             <div className="media-button-group">
@@ -620,7 +675,6 @@ export function DriveVideoSkin({
       <Hotkey keys="<" action="speedDown" />
 
       <Gesture type="tap" action="togglePaused" pointer="mouse" region="center" />
-      <Gesture type="tap" action="toggleControls" pointer="touch" />
       <Gesture type="doubletap" action="seekStep" value={-SEEK_TIME} region="left" />
       <Gesture
         type="doubletap"

@@ -25,7 +25,7 @@ import type {
   FileEntry,
   PlaybackProgressStats,
   QuarkIDCacheStats,
-  ThumbnailCacheStats,
+  VideoMetadataCacheStats,
   VideoSnapshot,
   VideoSnapshotCacheStats,
 } from "../bindings/drive-player";
@@ -82,6 +82,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Toaster, toast } from "@/components/ui/toast";
 import { DriveVideoSkin } from "@/components/drive-video-skin";
+import { analyzeVideoMetadata, type VideoMediaMetadata } from "@/lib/video-metadata";
 
 const Player = createPlayer({ features: videoFeatures });
 
@@ -101,7 +102,7 @@ const VIDEO_EXTENSIONS = new Set([
 ]);
 
 const THUMBNAIL_MAX_WIDTH = 320;
-const THUMBNAIL_CONCURRENCY = 2;
+const VIDEO_METADATA_CONCURRENCY = 2;
 const DIRECTORY_CACHE_SETTINGS_KEY = "drive-player.directory-cache-settings";
 const DEFAULT_DIRECTORY_CACHE_TTL_MINUTES = 30;
 const LEGACY_DEFAULT_DIRECTORY_CACHE_TTL_MINUTES = 5;
@@ -152,6 +153,7 @@ type ProviderBrowseSession = {
   currentPath: string;
   entries: FileEntry[];
   thumbnailImages: Record<string, string>;
+  videoMetadataByPath: Record<string, VideoMediaMetadata>;
   directoryCache: Map<string, DirectoryCacheItem>;
   scrollPositions: Map<string, number>;
   backHistory: string[];
@@ -163,6 +165,7 @@ function createProviderBrowseSession(): ProviderBrowseSession {
     currentPath: "/",
     entries: [],
     thumbnailImages: {},
+    videoMetadataByPath: {},
     directoryCache: new Map(),
     scrollPositions: new Map(),
     backHistory: [],
@@ -297,11 +300,12 @@ function VideoSnapshotPane({
   extracting: boolean;
   completedCount: number;
   plannedCount: number;
-  onExtract: () => void;
+  onExtract: (refreshAll: boolean) => void;
   onStop: () => void;
   onJump: (position: number) => void;
 }) {
-  const canExtract = !loading && plannedCount > 0 && completedCount < plannedCount;
+  const canExtract = !loading && plannedCount > 0;
+  const extractionComplete = plannedCount > 0 && completedCount >= plannedCount;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b p-3">
@@ -322,10 +326,10 @@ function VideoSnapshotPane({
             type="button"
             size="sm"
             variant="outline"
-            onClick={extracting ? onStop : onExtract}
+            onClick={extracting ? onStop : () => onExtract(extractionComplete)}
           >
             {extracting ? <Square /> : <Play />}
-            {extracting ? "中断提取" : snapshots.length > 0 ? "补全截图" : "提取截图"}
+            {extracting ? "中断提取" : extractionComplete ? "重新获取" : snapshots.length > 0 ? "补全截图" : "提取截图"}
           </Button>
         )}
       </div>
@@ -656,12 +660,13 @@ function VideoPlayer({
   useEffect(() => {
     const plannedTimes = plannedVideoSnapshotTimes(hudProgress.duration);
     setVideoSnapshotPlannedCount(plannedTimes.length);
+    if (videoSnapshotExtracting) return;
     setVideoSnapshotCompletedCount(
       plannedTimes.filter((position) => hasVideoSnapshotAt(videoSnapshots, position)).length,
     );
-  }, [hudProgress.duration, videoSnapshots]);
+  }, [hudProgress.duration, videoSnapshotExtracting, videoSnapshots]);
 
-  const startVideoSnapshotExtraction = useCallback(async () => {
+  const startVideoSnapshotExtraction = useCallback(async (refreshAll = false) => {
     if (videoSnapshotsLoading || videoSnapshotExtracting) return;
     const sourceVideo = videoRef.current;
     const duration = sourceVideo?.duration ?? 0;
@@ -671,8 +676,10 @@ function VideoPlayer({
     }
 
     const plannedTimes = plannedVideoSnapshotTimes(duration);
-    const missingTimes = plannedTimes.filter((position) => !hasVideoSnapshotAt(videoSnapshots, position));
-    const completedCount = plannedTimes.length - missingTimes.length;
+    const missingTimes = refreshAll
+      ? plannedTimes
+      : plannedTimes.filter((position) => !hasVideoSnapshotAt(videoSnapshots, position));
+    const completedCount = refreshAll ? 0 : plannedTimes.length - missingTimes.length;
     setVideoSnapshotPlannedCount(plannedTimes.length);
     setVideoSnapshotCompletedCount(completedCount);
 
@@ -705,6 +712,7 @@ function VideoPlayer({
             ]
               .sort((a, b) => a.position - b.position)
           ));
+          setVideoSnapshotCompletedCount((current) => Math.min(plannedTimes.length, current + 1));
         },
       );
     } catch (err) {
@@ -994,7 +1002,6 @@ function VideoPlayer({
       previousRate: number;
       active: boolean;
     } | null = null;
-
     const isControlsTarget = (target: EventTarget | null) => {
       return target instanceof Element && Boolean(target.closest(
         ".media-controls--root, .video-player-sidebar--fullscreen, button, [role='slider'], input, select, textarea, a",
@@ -1353,6 +1360,7 @@ function VideoPlayer({
         <Player.Provider>
           <DriveVideoSkin
             nativeFullscreen={isAndroid ? { active: nativeFullscreen, onToggle: toggleAndroidFullscreen } : undefined}
+            mobile={isMobile}
             onTimeSliderProgress={syncHUDWithTimeSlider}
             sidePanel={fullscreenActive ? (
               <VideoPlayerSidebar
@@ -1365,7 +1373,7 @@ function VideoPlayer({
                 extracting={videoSnapshotExtracting}
                 completedCount={videoSnapshotCompletedCount}
                 plannedCount={videoSnapshotPlannedCount}
-                onExtract={() => void startVideoSnapshotExtraction()}
+                onExtract={(refreshAll) => void startVideoSnapshotExtraction(refreshAll)}
                 onStop={stopVideoSnapshotExtraction}
                 onClose={() => setFullscreenSidePanelOpen(false)}
                 onJump={jumpToVideoSnapshot}
@@ -1464,7 +1472,7 @@ function VideoPlayer({
         extracting={videoSnapshotExtracting}
         completedCount={videoSnapshotCompletedCount}
         plannedCount={videoSnapshotPlannedCount}
-        onExtract={() => void startVideoSnapshotExtraction()}
+        onExtract={(refreshAll) => void startVideoSnapshotExtraction(refreshAll)}
         onStop={stopVideoSnapshotExtraction}
         onJump={jumpToVideoSnapshot}
         videos={directoryVideos}
@@ -1494,7 +1502,7 @@ function isVideo(entry: FileEntry) {
 }
 
 function captureVideoThumbnail(src: string, offsetPercent: number, signal: AbortSignal) {
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<{ dataUrl: string; width: number; height: number }>((resolve, reject) => {
     const video = document.createElement("video");
     let settled = false;
     let timeout = 0;
@@ -1506,12 +1514,13 @@ function captureVideoThumbnail(src: string, offsetPercent: number, signal: Abort
       video.load();
     };
 
-    const finish = (error?: unknown, dataURL?: string) => {
+    const finish = (error?: unknown, result?: { dataUrl: string; width: number; height: number }) => {
       if (settled) return;
       settled = true;
       cleanup();
       if (error) reject(error);
-      else resolve(dataURL ?? "");
+      else if (result) resolve(result);
+      else reject(new Error("缩略图生成结果为空"));
     };
 
     const onAbort = () => finish(new DOMException("Thumbnail generation aborted", "AbortError"));
@@ -1533,7 +1542,11 @@ function captureVideoThumbnail(src: string, offsetPercent: number, signal: Abort
         return;
       }
       context.drawImage(video, 0, 0, width, height);
-      finish(undefined, canvas.toDataURL("image/webp", 0.72));
+      finish(undefined, {
+        dataUrl: canvas.toDataURL("image/webp", 0.72),
+        width: video.videoWidth,
+        height: video.videoHeight,
+      });
     };
 
     video.crossOrigin = "anonymous";
@@ -1691,6 +1704,27 @@ function formatSize(bytes: number) {
   }
   const digits = unitIndex === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
   return `${value.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function formatFrameRate(frameRate: number) {
+  if (!Number.isFinite(frameRate) || frameRate <= 0) return "";
+  const rounded = Math.round(frameRate * 1000) / 1000;
+  return Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function hasCompleteVideoMediaMetadata(metadata?: VideoMediaMetadata) {
+  return Boolean(
+    metadata
+      && metadata.width > 0
+      && metadata.height > 0
+      && Number.isFinite(metadata.frameRate)
+      && metadata.frameRate > 0,
+  );
+}
+
+function formatVideoMediaMetadata(metadata?: VideoMediaMetadata) {
+  if (!hasCompleteVideoMediaMetadata(metadata) || !metadata) return "";
+  return `${metadata.width}×${metadata.height}@${formatFrameRate(metadata.frameRate)}`;
 }
 
 function formatDate(value: string) {
@@ -2013,7 +2047,8 @@ function App() {
   const [restoringSession, setRestoringSession] = useState(true);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [thumbnailImages, setThumbnailImages] = useState<Record<string, string>>({});
-  const [thumbnailStats, setThumbnailStats] = useState<ThumbnailCacheStats>({ count: 0, totalBytes: 0 });
+  const [videoMetadataByPath, setVideoMetadataByPath] = useState<Record<string, VideoMediaMetadata>>({});
+  const [videoMetadataStats, setVideoMetadataStats] = useState<VideoMetadataCacheStats>({ count: 0, totalBytes: 0 });
   const [videoSnapshotStats, setVideoSnapshotStats] = useState<VideoSnapshotCacheStats>({ count: 0, totalBytes: 0 });
   const [playbackProgressStats, setPlaybackProgressStats] = useState<PlaybackProgressStats>({ count: 0, totalBytes: 0 });
   const [quarkIDCacheStats, setQuarkIDCacheStats] = useState<QuarkIDCacheStats>({ count: 0 });
@@ -2043,14 +2078,21 @@ function App() {
   const [videoDialogOpen, setVideoDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!error || showSettings) return;
+    toast.add({ title: "请求失败", description: error, type: "error" });
+    setError("");
+  }, [error, showSettings]);
+
   const [webdavCacheTTLInput, setWebDAVCacheTTLInput] = useState("30");
   const [quarkDownloadCacheTTLInput, setQuarkDownloadCacheTTLInput] = useState("30");
   const [quarkIDCacheTTLInput, setQuarkIDCacheTTLInput] = useState("30");
   const [directoryCacheTTLInput, setDirectoryCacheTTLInput] = useState(String(directoryCacheSettings.ttlMinutes));
   const [directoryCacheMaxSizeInput, setDirectoryCacheMaxSizeInput] = useState(String(directoryCacheSettings.maxSizeMB));
-  const [thumbnailMaxAgeInput, setThumbnailMaxAgeInput] = useState("30");
-  const [thumbnailMaxSizeInput, setThumbnailMaxSizeInput] = useState("512");
-  const [thumbnailOffsetPercentInput, setThumbnailOffsetPercentInput] = useState("10");
+  const [videoMetadataMaxAgeInput, setVideoMetadataMaxAgeInput] = useState("30");
+  const [videoMetadataMaxSizeInput, setVideoMetadataMaxSizeInput] = useState("512");
+  const [videoMetadataThumbnailOffsetPercentInput, setVideoMetadataThumbnailOffsetPercentInput] = useState("10");
   const [videoSnapshotMaxAgeInput, setVideoSnapshotMaxAgeInput] = useState("30");
   const [videoSnapshotMaxSizeInput, setVideoSnapshotMaxSizeInput] = useState("1024");
   const [playbackMaxAgeInput, setPlaybackMaxAgeInput] = useState("365");
@@ -2062,7 +2104,7 @@ function App() {
   const directoryRequestId = useRef(0);
   const directoryRequest = useRef<ReturnType<typeof AppService.ListDirectory> | null>(null);
   const directoryAbortController = useRef<AbortController | null>(null);
-  const thumbnailAbortController = useRef<AbortController | null>(null);
+  const videoMetadataAbortController = useRef<AbortController | null>(null);
   const directoryScrollViewportRef = useRef<HTMLDivElement | null>(null);
   const breadcrumbScrollRef = useRef<HTMLElement | null>(null);
   const providerBrowseSessions = useRef<Record<CloudProvider, ProviderBrowseSession>>({
@@ -2075,7 +2117,7 @@ function App() {
   const currentPathRef = useRef("/");
   const directoryBackHistory = useRef(providerBrowseSessions.current["123"].backHistory);
   const directoryForwardHistory = useRef(providerBrowseSessions.current["123"].forwardHistory);
-  const thumbnailReloadNeeded = useRef(false);
+  const videoMetadataReloadNeeded = useRef(false);
   const directoryCache = useRef(providerBrowseSessions.current["123"].directoryCache);
   const directoryCacheSettingsRef = useRef(directoryCacheSettings);
 
@@ -2110,9 +2152,9 @@ function App() {
     setWebDAVCacheTTLInput(String(nextState.webdavCacheTTLMinutes));
     setQuarkDownloadCacheTTLInput(String(nextState.quarkDownloadCacheTTLMinutes));
     setQuarkIDCacheTTLInput(String(nextState.quarkIDCacheTTLMinutes));
-    setThumbnailMaxAgeInput(String(nextState.thumbnailMaxAgeDays));
-    setThumbnailMaxSizeInput(String(nextState.thumbnailMaxSizeMB));
-    setThumbnailOffsetPercentInput(String(nextState.thumbnailOffsetPercent));
+    setVideoMetadataMaxAgeInput(String(nextState.videoMetadataMaxAgeDays));
+    setVideoMetadataMaxSizeInput(String(nextState.videoMetadataMaxSizeMB));
+    setVideoMetadataThumbnailOffsetPercentInput(String(nextState.videoMetadataThumbnailOffsetPercent));
     setVideoSnapshotMaxAgeInput(String(nextState.videoSnapshotMaxAgeDays));
     setVideoSnapshotMaxSizeInput(String(nextState.videoSnapshotMaxSizeMB));
     setPlaybackMaxAgeInput(String(nextState.playbackMaxAgeDays));
@@ -2173,7 +2215,7 @@ function App() {
     () => () => {
       directoryRequest.current?.cancel("component unmounted");
       directoryAbortController.current?.abort();
-      thumbnailAbortController.current?.abort();
+      videoMetadataAbortController.current?.abort();
     },
     [],
   );
@@ -2255,9 +2297,9 @@ function App() {
   }, []);
 
   const startThumbnailLoading = useCallback((sourceEntries: FileEntry[], requestId: number) => {
-    thumbnailAbortController.current?.abort();
+    videoMetadataAbortController.current?.abort();
     const controller = new AbortController();
-    thumbnailAbortController.current = controller;
+    videoMetadataAbortController.current = controller;
     const videos = sourceEntries.filter(isVideo);
 
     void (async () => {
@@ -2269,35 +2311,60 @@ function App() {
           if (index >= videos.length) return;
           const entry = videos[index];
           try {
-            const cached = await AppService.GetThumbnail(entry.path, entry.modifiedAt);
+            const cached = await AppService.GetVideoMetadata(entry.path, entry.modifiedAt);
             if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
-            if (cached.found && cached.dataUrl) {
-              setThumbnailImages((current) => ({ ...current, [entry.path]: cached.dataUrl }));
+            if (cached.found && cached.thumbnailDataUrl) {
+              const mediaMetadata: VideoMediaMetadata = {
+                width: cached.width,
+                height: cached.height,
+                frameRate: cached.frameRate,
+              };
+              setThumbnailImages((current) => ({ ...current, [entry.path]: cached.thumbnailDataUrl }));
+              setVideoMetadataByPath((current) => ({ ...current, [entry.path]: mediaMetadata }));
               continue;
             }
 
             const playbackURL = await AppService.GetPlaybackURL(entry.path);
             if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
-            const dataURL = await captureVideoThumbnail(
-              playbackURL,
-              state?.thumbnailOffsetPercent ?? 10,
-              controller.signal,
+            const [thumbnail, analyzedMetadata] = await Promise.all([
+              captureVideoThumbnail(
+                playbackURL,
+                state?.videoMetadataThumbnailOffsetPercent ?? 10,
+                controller.signal,
+              ),
+              analyzeVideoMetadata(playbackURL, entry.size, controller.signal),
+            ]);
+            if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
+
+            const mediaMetadata: VideoMediaMetadata = {
+              width: analyzedMetadata.width || thumbnail.width,
+              height: analyzedMetadata.height || thumbnail.height,
+              frameRate: analyzedMetadata.frameRate,
+            };
+            if (!hasCompleteVideoMediaMetadata(mediaMetadata)) continue;
+
+            await AppService.SaveVideoMetadata(
+              entry.path,
+              entry.modifiedAt,
+              thumbnail.dataUrl,
+              mediaMetadata.width,
+              mediaMetadata.height,
+              mediaMetadata.frameRate,
             );
             if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
-            await AppService.SaveThumbnail(entry.path, entry.modifiedAt, dataURL);
-            if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
-            setThumbnailImages((current) => ({ ...current, [entry.path]: dataURL }));
+            setThumbnailImages((current) => ({ ...current, [entry.path]: thumbnail.dataUrl }));
+            setVideoMetadataByPath((current) => ({ ...current, [entry.path]: mediaMetadata }));
           } catch (err) {
             if (controller.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
-            // A codec or seek failure for one video should not block the directory or other thumbnails.
+            // A codec, seek, or metadata failure for one video should not block the directory or other video metadata jobs.
           }
         }
       };
 
-      const workerCount = Math.min(THUMBNAIL_CONCURRENCY, videos.length);
+      const workerCount = Math.min(VIDEO_METADATA_CONCURRENCY, videos.length);
       await Promise.all(Array.from({ length: workerCount }, () => worker()));
     })();
-  }, [state?.thumbnailOffsetPercent]);
+  }, [state?.videoMetadataThumbnailOffsetPercent]);
 
   const loadDirectory = useCallback(async (targetPath: string, forceRefresh = false) => {
     const normalized = normalizePath(targetPath);
@@ -2309,7 +2376,7 @@ function App() {
     directoryRequest.current?.cancel("directory changed");
     directoryRequest.current = null;
     directoryAbortController.current?.abort();
-    thumbnailAbortController.current?.abort();
+    videoMetadataAbortController.current?.abort();
     const controller = new AbortController();
     directoryAbortController.current = controller;
     setError("");
@@ -2325,6 +2392,7 @@ function App() {
         };
         setCurrentPath(normalized);
         setThumbnailImages({});
+        setVideoMetadataByPath({});
         setEntries(visibleEntries);
         setLoading(false);
         startThumbnailLoading(visibleEntries, requestId);
@@ -2337,6 +2405,7 @@ function App() {
     setCurrentPath(normalized);
     setEntries([]);
     setThumbnailImages({});
+    setVideoMetadataByPath({});
     setLoading(true);
     const request = AppService.ListDirectory(normalized);
     directoryRequest.current = request;
@@ -2429,7 +2498,8 @@ function App() {
     session.currentPath = currentPathRef.current;
     session.entries = entries.slice();
     session.thumbnailImages = { ...thumbnailImages };
-  }, [entries, rememberDirectoryScrollPosition, thumbnailImages]);
+    session.videoMetadataByPath = { ...videoMetadataByPath };
+  }, [entries, rememberDirectoryScrollPosition, thumbnailImages, videoMetadataByPath]);
 
   const resetProviderBrowseSession = useCallback((provider: CloudProvider) => {
     providerBrowseSessions.current[provider] = createProviderBrowseSession();
@@ -2448,8 +2518,10 @@ function App() {
     if (cached === null) {
       session.entries = [];
       session.thumbnailImages = {};
+      session.videoMetadataByPath = {};
       setEntries([]);
       setThumbnailImages({});
+      setVideoMetadataByPath({});
       void loadDirectory(session.currentPath);
       return;
     }
@@ -2458,6 +2530,7 @@ function App() {
     session.entries = visibleEntries.slice();
     setEntries(visibleEntries);
     setThumbnailImages({ ...session.thumbnailImages });
+    setVideoMetadataByPath({ ...session.videoMetadataByPath });
     pendingDirectoryScrollRestore.current = {
       path: session.currentPath,
       scrollTop: getDirectoryScrollPosition(session.currentPath),
@@ -2508,9 +2581,9 @@ function App() {
     }
   }, []);
 
-  const refreshThumbnailStats = useCallback(async () => {
+  const refreshVideoMetadataStats = useCallback(async () => {
     try {
-      setThumbnailStats(await AppService.GetThumbnailCacheStats());
+      setVideoMetadataStats(await AppService.GetVideoMetadataCacheStats());
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -2543,7 +2616,7 @@ function App() {
   const completeLogin = (nextState: AppState, provider: CloudProvider) => {
     directoryRequest.current?.cancel("provider login");
     directoryAbortController.current?.abort();
-    thumbnailAbortController.current?.abort();
+    videoMetadataAbortController.current?.abort();
     resetProviderBrowseSession(provider);
     syncBackendState(nextState);
     setQuarkIDCacheStats({ count: 0 });
@@ -2576,7 +2649,7 @@ function App() {
     saveActiveBrowseSession();
     directoryRequest.current?.cancel("provider switched");
     directoryAbortController.current?.abort();
-    thumbnailAbortController.current?.abort();
+    videoMetadataAbortController.current?.abort();
     const nextState = await AppService.SwitchProvider(provider);
     syncBackendState(nextState);
     restoreProviderBrowseSession(provider);
@@ -2594,7 +2667,7 @@ function App() {
     const loggedOutProvider = state ? normalizeProvider(state.provider) : activeBrowseProvider.current;
     directoryRequest.current?.cancel("provider logout");
     directoryAbortController.current?.abort();
-    thumbnailAbortController.current?.abort();
+    videoMetadataAbortController.current?.abort();
     const nextState = await AppService.Logout();
     resetProviderBrowseSession(loggedOutProvider);
     syncBackendState(nextState);
@@ -2617,6 +2690,7 @@ function App() {
     pointBrowseRefsAtProvider(loggedOutProvider);
     setEntries([]);
     setThumbnailImages({});
+    setVideoMetadataByPath({});
     setCurrentPath("/");
     syncDirectoryHistoryState();
     refreshProviderBrowseStats();
@@ -2648,7 +2722,7 @@ function App() {
     }
     if (!isVideo(entry)) return;
     try {
-      thumbnailAbortController.current?.abort();
+      videoMetadataAbortController.current?.abort();
       await activateVideoEntry(entry);
     } catch (err) {
       setError(errorMessage(err));
@@ -2661,8 +2735,8 @@ function App() {
 
   const closeSettings = useCallback(() => {
     setShowSettings(false);
-    if (thumbnailReloadNeeded.current) {
-      thumbnailReloadNeeded.current = false;
+    if (videoMetadataReloadNeeded.current) {
+      videoMetadataReloadNeeded.current = false;
       void loadDirectory(currentPathRef.current);
     }
   }, [loadDirectory]);
@@ -2784,36 +2858,38 @@ function App() {
     refreshProviderBrowseStats();
   };
 
-  const saveThumbnailSettings = async () => {
-    const maxAgeDays = Number.parseInt(thumbnailMaxAgeInput, 10);
-    const maxSizeMB = Number.parseInt(thumbnailMaxSizeInput, 10);
-    const offsetPercent = Number.parseInt(thumbnailOffsetPercentInput, 10);
+  const saveVideoMetadataSettings = async () => {
+    const maxAgeDays = Number.parseInt(videoMetadataMaxAgeInput, 10);
+    const maxSizeMB = Number.parseInt(videoMetadataMaxSizeInput, 10);
+    const offsetPercent = Number.parseInt(videoMetadataThumbnailOffsetPercentInput, 10);
     if (![maxAgeDays, maxSizeMB, offsetPercent].every(Number.isFinite)) {
-      toast.add({ title: "设置无效", description: "请输入有效的缩略图缓存设置", type: "error" });
+      toast.add({ title: "设置无效", description: "请输入有效的视频元信息缓存设置", type: "error" });
       return;
     }
     try {
-      const previousOffset = state?.thumbnailOffsetPercent;
-      const nextState = await AppService.SetThumbnailSettings(maxAgeDays, maxSizeMB, offsetPercent);
+      const previousOffset = state?.videoMetadataThumbnailOffsetPercent;
+      const nextState = await AppService.SetVideoMetadataSettings(maxAgeDays, maxSizeMB, offsetPercent);
       setState(nextState);
-      setThumbnailMaxAgeInput(String(nextState.thumbnailMaxAgeDays));
-      setThumbnailMaxSizeInput(String(nextState.thumbnailMaxSizeMB));
-      setThumbnailOffsetPercentInput(String(nextState.thumbnailOffsetPercent));
-      if (previousOffset !== nextState.thumbnailOffsetPercent) {
+      setVideoMetadataMaxAgeInput(String(nextState.videoMetadataMaxAgeDays));
+      setVideoMetadataMaxSizeInput(String(nextState.videoMetadataMaxSizeMB));
+      setVideoMetadataThumbnailOffsetPercentInput(String(nextState.videoMetadataThumbnailOffsetPercent));
+      if (previousOffset !== nextState.videoMetadataThumbnailOffsetPercent) {
         setThumbnailImages({});
-        thumbnailReloadNeeded.current = true;
+        setVideoMetadataByPath({});
+        videoMetadataReloadNeeded.current = true;
       }
-      await refreshThumbnailStats();
+      await refreshVideoMetadataStats();
     } catch (err) {
       toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
     }
   };
 
-  const clearThumbnailCache = async () => {
+  const clearVideoMetadataCache = async () => {
     try {
-      setThumbnailStats(await AppService.ClearThumbnailCache());
+      setVideoMetadataStats(await AppService.ClearVideoMetadataCache());
       setThumbnailImages({});
-      thumbnailReloadNeeded.current = true;
+      setVideoMetadataByPath({});
+      videoMetadataReloadNeeded.current = true;
     } catch (err) {
       toast.add({ title: "清空失败", description: errorMessage(err), type: "error" });
     }
@@ -3003,10 +3079,10 @@ function App() {
     Number.parseInt(quarkDownloadCacheTTLInput, 10) !== state.quarkDownloadCacheTTLMinutes;
   const quarkIDCacheSettingsChanged =
     Number.parseInt(quarkIDCacheTTLInput, 10) !== state.quarkIDCacheTTLMinutes;
-  const thumbnailSettingsChanged =
-    Number.parseInt(thumbnailMaxAgeInput, 10) !== state.thumbnailMaxAgeDays ||
-    Number.parseInt(thumbnailMaxSizeInput, 10) !== state.thumbnailMaxSizeMB ||
-    Number.parseInt(thumbnailOffsetPercentInput, 10) !== state.thumbnailOffsetPercent;
+  const videoMetadataSettingsChanged =
+    Number.parseInt(videoMetadataMaxAgeInput, 10) !== state.videoMetadataMaxAgeDays ||
+    Number.parseInt(videoMetadataMaxSizeInput, 10) !== state.videoMetadataMaxSizeMB ||
+    Number.parseInt(videoMetadataThumbnailOffsetPercentInput, 10) !== state.videoMetadataThumbnailOffsetPercent;
   const videoSnapshotSettingsChanged =
     Number.parseInt(videoSnapshotMaxAgeInput, 10) !== state.videoSnapshotMaxAgeDays ||
     Number.parseInt(videoSnapshotMaxSizeInput, 10) !== state.videoSnapshotMaxSizeMB;
@@ -3059,7 +3135,7 @@ function App() {
               setShowSettings(true);
               void refreshProviderCaches();
               refreshProviderBrowseStats();
-              void refreshThumbnailStats();
+              void refreshVideoMetadataStats();
               void refreshVideoSnapshotStats();
               void refreshPlaybackProgressStats();
               void refreshQuarkIDCacheStats();
@@ -3082,22 +3158,9 @@ function App() {
 
       <Separator />
 
-      <main className="min-h-0 flex-1 overflow-hidden p-2 sm:p-4 md:p-6">
-        {error && !showSettings && (
-          <Alert variant="destructive" className="mb-4">
-            <CircleAlert className="size-4" />
-            <AlertTitle>请求失败</AlertTitle>
-            <AlertDescription className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:gap-4">
-              <span>{error}</span>
-              <Button variant="ghost" size="sm" className="-my-1" onClick={() => setError("")}>
-                关闭
-              </Button>
-            </AlertDescription>
-          </Alert>
-        )}
-
-        <Card className="flex h-full min-h-0 flex-col gap-0 py-0">
-              <CardHeader className="border-b px-3 py-3 sm:px-6">
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+        <div className="flex min-h-0 flex-1 flex-col">
+              <div className="shrink-0 border-b px-3 py-3 sm:px-6">
                 <div className="flex min-w-0 items-center gap-2">
                   {!isMobile && (
                     <>
@@ -3168,21 +3231,21 @@ function App() {
                     </BreadcrumbList>
                   </Breadcrumb>
                 </div>
-              </CardHeader>
+              </div>
 
-              <CardContent className="flex min-h-0 flex-1 flex-col p-0">
+              <div className="flex min-h-0 flex-1 flex-col">
                 {!isMobile && (
                   <Table className="table-fixed">
                     <colgroup>
                       <col />
-                      <col className="w-32" />
+                      <col className="w-72" />
                       <col className="w-48" />
                     </colgroup>
                     <TableHeader>
                       <TableRow className="hover:bg-transparent">
-                        <TableHead>名称</TableHead>
-                        <TableHead>大小</TableHead>
-                        <TableHead>修改时间</TableHead>
+                        <TableHead className="px-3 sm:px-4">名称</TableHead>
+                        <TableHead className="px-3 sm:px-4">大小</TableHead>
+                        <TableHead className="px-3 sm:px-4">修改时间</TableHead>
                       </TableRow>
                     </TableHeader>
                   </Table>
@@ -3191,7 +3254,7 @@ function App() {
                   <Table className="table-fixed">
                     <colgroup>
                       <col />
-                      {!isMobile && <col className="w-32" />}
+                      {!isMobile && <col className="w-72" />}
                       {!isMobile && <col className="w-48" />}
                     </colgroup>
                     <TableBody>
@@ -3209,20 +3272,25 @@ function App() {
                         </TableRow>
                       ) : (
                         visibleEntries.map((entry) => {
+                          const mediaMetadata = videoMetadataByPath[entry.path];
+                          const thumbnailDataURL = thumbnailImages[entry.path];
+                          const thumbnailResultReady = Boolean(
+                            thumbnailDataURL && hasCompleteVideoMediaMetadata(mediaMetadata),
+                          );
                           return (
                             <TableRow
                               key={entry.path}
                               className="cursor-pointer"
                               onClick={() => void openEntry(entry)}
                             >
-                              <TableCell>
+                              <TableCell className="px-3 py-2 sm:px-4">
                                 <div className="flex min-w-0 items-center gap-2 sm:gap-3">
                                   <div className="flex h-12 w-20 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted sm:h-14 sm:w-24">
                                     {entry.isDirectory ? (
                                       <Folder className="size-8" />
-                                    ) : thumbnailImages[entry.path] ? (
+                                    ) : thumbnailResultReady ? (
                                       <img
-                                        src={thumbnailImages[entry.path]}
+                                        src={thumbnailDataURL}
                                         alt=""
                                         className="h-full w-full object-cover"
                                       />
@@ -3234,7 +3302,16 @@ function App() {
                                     <div className="truncate font-medium">{entry.name}</div>
                                     {isMobile && (
                                       <div className="mt-1 flex min-w-0 items-center justify-between gap-3 text-xs text-muted-foreground">
-                                        <span>{entry.isDirectory ? "文件夹" : formatSize(entry.size)}</span>
+                                        {entry.isDirectory ? (
+                                          <span className="min-w-0 truncate">文件夹</span>
+                                        ) : (
+                                          <span className="inline-flex min-w-0 max-w-full items-center gap-2.5">
+                                            <span className="shrink-0">{formatSize(entry.size)}</span>
+                                            {thumbnailResultReady && (
+                                              <span className="truncate">{formatVideoMediaMetadata(mediaMetadata)}</span>
+                                            )}
+                                          </span>
+                                        )}
                                         <span className="shrink-0">{formatDate(entry.modifiedAt)}</span>
                                       </div>
                                     )}
@@ -3242,12 +3319,21 @@ function App() {
                                 </div>
                               </TableCell>
                               {!isMobile && (
-                                <TableCell className="text-muted-foreground">
-                                  {entry.isDirectory ? "—" : formatSize(entry.size)}
+                                <TableCell className="px-3 py-2 text-muted-foreground sm:px-4">
+                                  {entry.isDirectory ? (
+                                    "—"
+                                  ) : (
+                                    <span className="inline-flex items-center gap-2.5">
+                                      <span>{formatSize(entry.size)}</span>
+                                      {thumbnailResultReady && (
+                                        <span>{formatVideoMediaMetadata(mediaMetadata)}</span>
+                                      )}
+                                    </span>
+                                  )}
                                 </TableCell>
                               )}
                               {!isMobile && (
-                                <TableCell className="text-muted-foreground">{formatDate(entry.modifiedAt)}</TableCell>
+                                <TableCell className="px-3 py-2 text-muted-foreground sm:px-4">{formatDate(entry.modifiedAt)}</TableCell>
                               )}
                             </TableRow>
                           );
@@ -3256,8 +3342,8 @@ function App() {
                     </TableBody>
                   </Table>
                 </ScrollArea>
-              </CardContent>
-        </Card>
+              </div>
+        </div>
       </main>
 
       <AlertDialog open={showLogoutConfirm} onOpenChange={setShowLogoutConfirm}>
@@ -3588,50 +3674,50 @@ function App() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>视频缩略图</CardTitle>
+                  <CardTitle>视频元信息</CardTitle>
                   <CardDescription>
-                    仅为当前打开目录的视频加载缩略图。生成结果会持久化，并按最近使用时间自动淘汰。
+                    为当前打开目录的视频生成并缓存缩略图、分辨率和帧率；三项完整后一次性展示，并按最近使用时间自动淘汰。
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid gap-4 sm:grid-cols-3">
                     <div className="grid gap-2">
-                      <Label htmlFor="thumbnail-max-age">最长保留时间（天）</Label>
+                      <Label htmlFor="video-metadata-max-age">最长保留时间（天）</Label>
                       <Input
-                        id="thumbnail-max-age"
+                        id="video-metadata-max-age"
                         type="number"
                         min={1}
                         max={3650}
-                        value={thumbnailMaxAgeInput}
-                        onChange={(event) => setThumbnailMaxAgeInput(event.target.value)}
+                        value={videoMetadataMaxAgeInput}
+                        onChange={(event) => setVideoMetadataMaxAgeInput(event.target.value)}
                       />
                     </div>
                     <div className="grid gap-2">
-                      <Label htmlFor="thumbnail-max-size">总大小上限（MB）</Label>
+                      <Label htmlFor="video-metadata-max-size">总大小上限（MB）</Label>
                       <Input
-                        id="thumbnail-max-size"
+                        id="video-metadata-max-size"
                         type="number"
                         min={16}
                         max={10240}
-                        value={thumbnailMaxSizeInput}
-                        onChange={(event) => setThumbnailMaxSizeInput(event.target.value)}
+                        value={videoMetadataMaxSizeInput}
+                        onChange={(event) => setVideoMetadataMaxSizeInput(event.target.value)}
                       />
                     </div>
                     <div className="grid gap-2">
-                      <Label htmlFor="thumbnail-offset">缩略图偏移（%）</Label>
+                      <Label htmlFor="video-metadata-thumbnail-offset">缩略图截帧位置（%）</Label>
                       <Input
-                        id="thumbnail-offset"
+                        id="video-metadata-thumbnail-offset"
                         type="number"
                         min={0}
                         max={100}
-                        value={thumbnailOffsetPercentInput}
-                        onChange={(event) => setThumbnailOffsetPercentInput(event.target.value)}
+                        value={videoMetadataThumbnailOffsetPercentInput}
+                        onChange={(event) => setVideoMetadataThumbnailOffsetPercentInput(event.target.value)}
                       />
                     </div>
                   </div>
                   <Button
-                    onClick={() => void saveThumbnailSettings()}
-                    disabled={!thumbnailSettingsChanged}
+                    onClick={() => void saveVideoMetadataSettings()}
+                    disabled={!videoMetadataSettingsChanged}
                   >
                     保存
                   </Button>
@@ -3640,18 +3726,18 @@ function App() {
                     <div className="flex flex-wrap items-center gap-2 text-sm">
                       <span className="text-muted-foreground">空间占用</span>
                       <Badge variant="outline">
-                        {thumbnailStats.totalBytes === 0 ? "0 B" : formatSize(thumbnailStats.totalBytes)} / {state.thumbnailMaxSizeMB} MB
+                        {videoMetadataStats.totalBytes === 0 ? "0 B" : formatSize(videoMetadataStats.totalBytes)} / {state.videoMetadataMaxSizeMB} MB
                       </Badge>
-                      <Badge variant="outline">{thumbnailStats.count} 张</Badge>
+                      <Badge variant="outline">{videoMetadataStats.count} 项</Badge>
                     </div>
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => void clearThumbnailCache()}
-                      disabled={thumbnailStats.count === 0}
+                      onClick={() => void clearVideoMetadataCache()}
+                      disabled={videoMetadataStats.count === 0}
                     >
                       <Trash2 />
-                      清空缩略图
+                      清空视频元信息缓存
                     </Button>
                   </div>
                 </CardContent>
@@ -3850,7 +3936,7 @@ function App() {
                   <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:gap-4">
                     <div className="space-y-1.5">
                       <CardTitle>本地存储</CardTitle>
-                      <CardDescription>应用配置、视频缩略图、视频时间点截图和播放进度都保存在这个应用数据目录下。</CardDescription>
+                      <CardDescription>应用配置、视频元信息、视频时间点截图和播放进度都保存在这个应用数据目录下。</CardDescription>
                     </div>
                     {!isMobile && (
                       <Button variant="outline" size="sm" onClick={() => void openStorageDirectory()}>
@@ -3870,8 +3956,8 @@ function App() {
                     <code className="break-all rounded bg-muted px-2 py-1">{state.configPath}</code>
                   </div>
                   <div className="grid gap-1">
-                    <span className="text-muted-foreground">缩略图目录</span>
-                    <code className="break-all rounded bg-muted px-2 py-1">{state.thumbnailDirectory}</code>
+                    <span className="text-muted-foreground">视频元信息目录</span>
+                    <code className="break-all rounded bg-muted px-2 py-1">{state.videoMetadataDirectory}</code>
                   </div>
                   <div className="grid gap-1">
                     <span className="text-muted-foreground">视频截图目录</span>

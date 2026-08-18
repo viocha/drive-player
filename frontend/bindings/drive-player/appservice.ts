@@ -21,8 +21,8 @@ export function ClearRedirectCache(provider: string): $CancellablePromise<void> 
     return $Call.ByID(3571716791, provider);
 }
 
-export function ClearThumbnailCache(): $CancellablePromise<$models.ThumbnailCacheStats> {
-    return $Call.ByID(3145136249);
+export function ClearVideoMetadataCache(): $CancellablePromise<$models.VideoMetadataCacheStats> {
+    return $Call.ByID(2061626127);
 }
 
 export function ClearVideoSnapshotCache(): $CancellablePromise<$models.VideoSnapshotCacheStats> {
@@ -57,12 +57,12 @@ export function GetState(): $CancellablePromise<$models.AppState> {
     return $Call.ByID(800887515);
 }
 
-export function GetThumbnail(remotePath: string, modifiedAt: string): $CancellablePromise<$models.ThumbnailResult> {
-    return $Call.ByID(1863041566, remotePath, modifiedAt);
+export function GetVideoMetadata(remotePath: string, modifiedAt: string): $CancellablePromise<$models.VideoMetadataResult> {
+    return $Call.ByID(3706788176, remotePath, modifiedAt);
 }
 
-export function GetThumbnailCacheStats(): $CancellablePromise<$models.ThumbnailCacheStats> {
-    return $Call.ByID(2398776823);
+export function GetVideoMetadataCacheStats(): $CancellablePromise<$models.VideoMetadataCacheStats> {
+    return $Call.ByID(2775309033);
 }
 
 export function GetVideoSnapshotCacheStats(): $CancellablePromise<$models.VideoSnapshotCacheStats> {
@@ -101,8 +101,8 @@ export function SavePlaybackProgress(remotePath: string, position: number, durat
     return $Call.ByID(1818561021, remotePath, position, duration);
 }
 
-export function SaveThumbnail(remotePath: string, modifiedAt: string, dataURL: string): $CancellablePromise<$models.ThumbnailCacheStats> {
-    return $Call.ByID(1600312045, remotePath, modifiedAt, dataURL);
+export function SaveVideoMetadata(remotePath: string, modifiedAt: string, thumbnailDataURL: string, width: number, height: number, frameRate: number): $CancellablePromise<$models.VideoMetadataCacheStats> {
+    return $Call.ByID(4077100431, remotePath, modifiedAt, thumbnailDataURL, width, height, frameRate);
 }
 
 export function SaveVideoSnapshot(remotePath: string, modifiedAt: string, position: number, dataURL: string): $CancellablePromise<$models.VideoSnapshotCacheStats> {
@@ -129,8 +129,8 @@ export function SetQuarkIDCacheTTL(minutes: number): $CancellablePromise<$models
     return $Call.ByID(3209867527, minutes);
 }
 
-export function SetThumbnailSettings(maxAgeDays: number, maxSizeMB: number, offsetPercent: number): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(99162039, maxAgeDays, maxSizeMB, offsetPercent);
+export function SetVideoMetadataSettings(maxAgeDays: number, maxSizeMB: number, offsetPercent: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(2562364601, maxAgeDays, maxSizeMB, offsetPercent);
 }
 
 export function SetVideoSnapshotSettings(maxAgeDays: number, maxSizeMB: number): $CancellablePromise<$models.AppState> {

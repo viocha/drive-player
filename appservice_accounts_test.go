@@ -33,18 +33,18 @@ func newDualAccountTestService(t *testing.T) *AppService {
 
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	config := diskConfig{
-		WebDAVCacheTTLMinutes:        defaultURLCacheTTL,
-		QuarkDownloadCacheTTLMinutes: defaultURLCacheTTL,
-		QuarkIDCacheTTLMinutes:       defaultQuarkIDCacheTTL,
-		ThumbnailMaxAgeDays:          defaultThumbnailMaxAgeDays,
-		ThumbnailMaxSizeMB:           defaultThumbnailMaxSizeMB,
-		ThumbnailOffsetPercent:       defaultThumbnailOffsetPercent,
-		PlaybackMaxAgeDays:           defaultPlaybackMaxAgeDays,
-		PlaybackMaxSizeMB:            defaultPlaybackMaxSizeMB,
-		Username:                     "webdav-user",
-		Password:                     "webdav-password",
-		Provider:                     provider123,
-		QuarkCookie:                  "quark-cookie",
+		WebDAVCacheTTLMinutes:               defaultURLCacheTTL,
+		QuarkDownloadCacheTTLMinutes:        defaultURLCacheTTL,
+		QuarkIDCacheTTLMinutes:              defaultQuarkIDCacheTTL,
+		VideoMetadataMaxAgeDays:             defaultVideoMetadataMaxAgeDays,
+		VideoMetadataMaxSizeMB:              defaultVideoMetadataMaxSizeMB,
+		VideoMetadataThumbnailOffsetPercent: defaultVideoMetadataThumbnailOffsetPercent,
+		PlaybackMaxAgeDays:                  defaultPlaybackMaxAgeDays,
+		PlaybackMaxSizeMB:                   defaultPlaybackMaxSizeMB,
+		Username:                            "webdav-user",
+		Password:                            "webdav-password",
+		Provider:                            provider123,
+		QuarkCookie:                         "quark-cookie",
 	}
 	service := &AppService{
 		credentials:    credentials{username: config.Username, password: config.Password},

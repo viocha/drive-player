@@ -14,9 +14,9 @@ export interface AppState {
     "webdavCacheTTLMinutes": number;
     "quarkDownloadCacheTTLMinutes": number;
     "quarkIDCacheTTLMinutes": number;
-    "thumbnailMaxAgeDays": number;
-    "thumbnailMaxSizeMB": number;
-    "thumbnailOffsetPercent": number;
+    "videoMetadataMaxAgeDays": number;
+    "videoMetadataMaxSizeMB": number;
+    "videoMetadataThumbnailOffsetPercent": number;
     "videoSnapshotMaxAgeDays": number;
     "videoSnapshotMaxSizeMB": number;
     "playbackMaxAgeDays": number;
@@ -26,7 +26,7 @@ export interface AppState {
     "mobileLongPressRate": number;
     "storageDirectory": string;
     "configPath": string;
-    "thumbnailDirectory": string;
+    "videoMetadataDirectory": string;
     "videoSnapshotDirectory": string;
     "playbackProgressPath": string;
     "proxyBaseUrl": string;
@@ -67,14 +67,17 @@ export interface RedirectCacheEntry {
     "expiresAt": string;
 }
 
-export interface ThumbnailCacheStats {
+export interface VideoMetadataCacheStats {
     "count": number;
     "totalBytes": number;
 }
 
-export interface ThumbnailResult {
+export interface VideoMetadataResult {
     "found": boolean;
-    "dataUrl": string;
+    "thumbnailDataUrl": string;
+    "width": number;
+    "height": number;
+    "frameRate": number;
 }
 
 export interface VideoSnapshot {
