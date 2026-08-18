@@ -51,6 +51,12 @@ import {
 } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
   Card,
   CardContent,
   CardDescription,
@@ -1527,7 +1533,7 @@ function captureVideoThumbnail(src: string, offsetPercent: number, signal: Abort
 
     const capture = () => {
       if (signal.aborted || settled) return;
-      if (!video.videoWidth || !video.videoHeight) {
+      if (!video.videoWidth || !video.videoHeight || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
         finish(new Error("视频没有可用画面"));
         return;
       }
@@ -1557,15 +1563,16 @@ function captureVideoThumbnail(src: string, offsetPercent: number, signal: Abort
     video.addEventListener("loadedmetadata", () => {
       const duration = Number.isFinite(video.duration) ? video.duration : 0;
       const normalizedPercent = Math.max(0, Math.min(100, offsetPercent));
-      const target = duration > 0
-        ? Math.min((duration * normalizedPercent) / 100, Math.max(0, duration - 0.25))
-        : 0;
-      if (target <= 0.05) {
+      const target = duration > 0 ? (duration * normalizedPercent) / 100 : 0;
+      const captureWhenDataIsReady = () => {
         if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) capture();
         else video.addEventListener("loadeddata", capture, { once: true });
+      };
+      if (target === 0) {
+        captureWhenDataIsReady();
         return;
       }
-      video.addEventListener("seeked", capture, { once: true });
+      video.addEventListener("seeked", captureWhenDataIsReady, { once: true });
       video.currentTime = target;
     }, { once: true });
 
@@ -2049,6 +2056,7 @@ function App() {
   const [thumbnailImages, setThumbnailImages] = useState<Record<string, string>>({});
   const [videoMetadataByPath, setVideoMetadataByPath] = useState<Record<string, VideoMediaMetadata>>({});
   const [videoMetadataStats, setVideoMetadataStats] = useState<VideoMetadataCacheStats>({ count: 0, totalBytes: 0 });
+  const [refreshingVideoMetadataPaths, setRefreshingVideoMetadataPaths] = useState<Set<string>>(() => new Set());
   const [videoSnapshotStats, setVideoSnapshotStats] = useState<VideoSnapshotCacheStats>({ count: 0, totalBytes: 0 });
   const [playbackProgressStats, setPlaybackProgressStats] = useState<PlaybackProgressStats>({ count: 0, totalBytes: 0 });
   const [quarkIDCacheStats, setQuarkIDCacheStats] = useState<QuarkIDCacheStats>({ count: 0 });
@@ -2102,6 +2110,7 @@ function App() {
   const [fullscreenHUDSideOffsetInput, setFullscreenHUDSideOffsetInput] = useState("0");
   const [fullscreenHUDToggleSaving, setFullscreenHUDToggleSaving] = useState(false);
   const directoryRequestId = useRef(0);
+  const openContextMenuPath = useRef("");
   const directoryRequest = useRef<ReturnType<typeof AppService.ListDirectory> | null>(null);
   const directoryAbortController = useRef<AbortController | null>(null);
   const videoMetadataAbortController = useRef<AbortController | null>(null);
@@ -2296,6 +2305,42 @@ function App() {
     return scrollTop;
   }, []);
 
+  const generateAndCacheVideoMetadata = useCallback(async (entry: FileEntry, signal: AbortSignal) => {
+    const playbackURL = await AppService.GetPlaybackURL(entry.path);
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+
+    const [thumbnail, analyzedMetadata] = await Promise.all([
+      captureVideoThumbnail(
+        playbackURL,
+        state?.videoMetadataThumbnailOffsetPercent ?? 10,
+        signal,
+      ),
+      analyzeVideoMetadata(playbackURL, entry.size, signal),
+    ]);
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+
+    const mediaMetadata: VideoMediaMetadata = {
+      width: analyzedMetadata.width || thumbnail.width,
+      height: analyzedMetadata.height || thumbnail.height,
+      frameRate: analyzedMetadata.frameRate,
+    };
+    if (!hasCompleteVideoMediaMetadata(mediaMetadata)) {
+      throw new Error("视频元信息不完整");
+    }
+
+    await AppService.SaveVideoMetadata(
+      entry.path,
+      entry.modifiedAt,
+      thumbnail.dataUrl,
+      mediaMetadata.width,
+      mediaMetadata.height,
+      mediaMetadata.frameRate,
+    );
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+
+    return { thumbnailDataURL: thumbnail.dataUrl, mediaMetadata };
+  }, [state?.videoMetadataThumbnailOffsetPercent]);
+
   const startThumbnailLoading = useCallback((sourceEntries: FileEntry[], requestId: number) => {
     videoMetadataAbortController.current?.abort();
     const controller = new AbortController();
@@ -2324,36 +2369,10 @@ function App() {
               continue;
             }
 
-            const playbackURL = await AppService.GetPlaybackURL(entry.path);
+            const generated = await generateAndCacheVideoMetadata(entry, controller.signal);
             if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
-            const [thumbnail, analyzedMetadata] = await Promise.all([
-              captureVideoThumbnail(
-                playbackURL,
-                state?.videoMetadataThumbnailOffsetPercent ?? 10,
-                controller.signal,
-              ),
-              analyzeVideoMetadata(playbackURL, entry.size, controller.signal),
-            ]);
-            if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
-
-            const mediaMetadata: VideoMediaMetadata = {
-              width: analyzedMetadata.width || thumbnail.width,
-              height: analyzedMetadata.height || thumbnail.height,
-              frameRate: analyzedMetadata.frameRate,
-            };
-            if (!hasCompleteVideoMediaMetadata(mediaMetadata)) continue;
-
-            await AppService.SaveVideoMetadata(
-              entry.path,
-              entry.modifiedAt,
-              thumbnail.dataUrl,
-              mediaMetadata.width,
-              mediaMetadata.height,
-              mediaMetadata.frameRate,
-            );
-            if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
-            setThumbnailImages((current) => ({ ...current, [entry.path]: thumbnail.dataUrl }));
-            setVideoMetadataByPath((current) => ({ ...current, [entry.path]: mediaMetadata }));
+            setThumbnailImages((current) => ({ ...current, [entry.path]: generated.thumbnailDataURL }));
+            setVideoMetadataByPath((current) => ({ ...current, [entry.path]: generated.mediaMetadata }));
           } catch (err) {
             if (controller.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
             // A codec, seek, or metadata failure for one video should not block the directory or other video metadata jobs.
@@ -2364,7 +2383,38 @@ function App() {
       const workerCount = Math.min(VIDEO_METADATA_CONCURRENCY, videos.length);
       await Promise.all(Array.from({ length: workerCount }, () => worker()));
     })();
-  }, [state?.videoMetadataThumbnailOffsetPercent]);
+  }, [generateAndCacheVideoMetadata]);
+
+  const refreshVideoMetadata = useCallback(async (entry: FileEntry) => {
+    if (!isVideo(entry) || refreshingVideoMetadataPaths.has(entry.path)) return;
+
+    setRefreshingVideoMetadataPaths((current) => {
+      const next = new Set(current);
+      next.add(entry.path);
+      return next;
+    });
+    const requestId = directoryRequestId.current;
+    const controller = new AbortController();
+
+    try {
+      const generated = await generateAndCacheVideoMetadata(entry, controller.signal);
+      if (requestId === directoryRequestId.current) {
+        setThumbnailImages((current) => ({ ...current, [entry.path]: generated.thumbnailDataURL }));
+        setVideoMetadataByPath((current) => ({ ...current, [entry.path]: generated.mediaMetadata }));
+      }
+      toast.add({ title: "元信息已更新", description: entry.name, type: "success" });
+    } catch (err) {
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        toast.add({ title: "重新获取元信息失败", description: errorMessage(err), type: "error" });
+      }
+    } finally {
+      setRefreshingVideoMetadataPaths((current) => {
+        const next = new Set(current);
+        next.delete(entry.path);
+        return next;
+      });
+    }
+  }, [generateAndCacheVideoMetadata, refreshingVideoMetadataPaths]);
 
   const loadDirectory = useCallback(async (targetPath: string, forceRefresh = false) => {
     const normalized = normalizePath(targetPath);
@@ -3277,15 +3327,18 @@ function App() {
                           const thumbnailResultReady = Boolean(
                             thumbnailDataURL && hasCompleteVideoMediaMetadata(mediaMetadata),
                           );
-                          return (
+                          const refreshingMetadata = !entry.isDirectory && refreshingVideoMetadataPaths.has(entry.path);
+                          const row = (
                             <TableRow
-                              key={entry.path}
-                              className="cursor-pointer"
-                              onClick={() => void openEntry(entry)}
+                              className="cursor-pointer active:bg-muted/70 data-pressed:bg-muted/70"
+                              onClick={() => {
+                                if (openContextMenuPath.current === entry.path) return;
+                                void openEntry(entry);
+                              }}
                             >
                               <TableCell className="px-3 py-2 sm:px-4">
                                 <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-                                  <div className="flex h-12 w-20 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted sm:h-14 sm:w-24">
+                                  <div className="relative flex h-12 w-20 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted sm:h-14 sm:w-24">
                                     {entry.isDirectory ? (
                                       <Folder className="size-8" />
                                     ) : thumbnailResultReady ? (
@@ -3296,6 +3349,11 @@ function App() {
                                       />
                                     ) : (
                                       <Play className="size-4" />
+                                    )}
+                                    {refreshingMetadata && (
+                                      <div className="absolute inset-0 flex items-center justify-center bg-background/60">
+                                        <LoaderCircle className="size-5 animate-spin" />
+                                      </div>
                                     )}
                                   </div>
                                   <div className="min-w-0 flex-1">
@@ -3336,6 +3394,32 @@ function App() {
                                 <TableCell className="px-3 py-2 text-muted-foreground sm:px-4">{formatDate(entry.modifiedAt)}</TableCell>
                               )}
                             </TableRow>
+                          );
+                          if (!isVideo(entry)) {
+                            return <Fragment key={entry.path}>{row}</Fragment>;
+                          }
+                          return (
+                            <ContextMenu
+                              key={entry.path}
+                              onOpenChange={(open) => {
+                                if (open) {
+                                  openContextMenuPath.current = entry.path;
+                                } else if (openContextMenuPath.current === entry.path) {
+                                  openContextMenuPath.current = "";
+                                }
+                              }}
+                            >
+                              <ContextMenuTrigger render={row} />
+                              <ContextMenuContent>
+                                <ContextMenuItem
+                                  disabled={refreshingMetadata}
+                                  onClick={() => void refreshVideoMetadata(entry)}
+                                >
+                                  <RefreshCw />
+                                  重新获取元信息
+                                </ContextMenuItem>
+                              </ContextMenuContent>
+                            </ContextMenu>
                           );
                         })
                       )}
