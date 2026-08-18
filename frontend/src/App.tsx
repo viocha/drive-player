@@ -2402,7 +2402,6 @@ function App() {
         setThumbnailImages((current) => ({ ...current, [entry.path]: generated.thumbnailDataURL }));
         setVideoMetadataByPath((current) => ({ ...current, [entry.path]: generated.mediaMetadata }));
       }
-      toast.add({ title: "元信息已更新", description: entry.name, type: "success" });
     } catch (err) {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
         toast.add({ title: "重新获取元信息失败", description: errorMessage(err), type: "error" });
