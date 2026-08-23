@@ -555,9 +555,10 @@ public class WailsBridge {
     }
 
     /**
-     * Set the device-wide system brightness in 5-percent steps without changing
-     * the user's brightness mode. In particular, keep adaptive/automatic
-     * brightness enabled when it is already enabled.
+     * Set brightness in 5-percent steps without changing the user's brightness
+     * mode. The window override makes the requested value take effect immediately
+     * in the player even when adaptive/automatic brightness is enabled; the system
+     * setting is kept in sync for the existing device-wide behavior.
      */
     public void setBrightness(final int pct) {
         mainHandler.post(() -> {
@@ -570,9 +571,13 @@ public class WailsBridge {
                 int percent = Math.max(5, Math.min(100, Math.round(pct / 5f) * 5));
                 int brightness = Math.round(percent * 255f / 100f);
 
-                // Ensure an old per-window override cannot mask the system value.
+                // SCREEN_BRIGHTNESS is not the effective display brightness while
+                // adaptive brightness is active on many devices. Apply the same
+                // value to this window so both upward and downward swipes have an
+                // immediate, symmetric visual effect without disabling adaptive
+                // brightness globally.
                 WindowManager.LayoutParams lp = activity.getWindow().getAttributes();
-                lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+                lp.screenBrightness = percent / 100f;
                 activity.getWindow().setAttributes(lp);
 
                 Settings.System.putInt(
@@ -635,12 +640,16 @@ public class WailsBridge {
         });
     }
 
-    /** Current device-wide brightness as {"value":0.0-1.0,"writable":bool}. */
+    /** Current effective player brightness as {"value":0.0-1.0,"writable":bool}. */
     public String getBrightnessJson() {
         try {
-            int sys = Settings.System.getInt(activity.getContentResolver(),
-                    Settings.System.SCREEN_BRIGHTNESS, 128);
-            float v = Math.max(0f, Math.min(1f, sys / 255f));
+            float v = activity.getWindow().getAttributes().screenBrightness;
+            if (v < 0f) {
+                int sys = Settings.System.getInt(activity.getContentResolver(),
+                        Settings.System.SCREEN_BRIGHTNESS, 128);
+                v = sys / 255f;
+            }
+            v = Math.max(0f, Math.min(1f, v));
             boolean writable = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
                     || Settings.System.canWrite(activity);
             return new JSONObject()
