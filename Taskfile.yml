@@ -17,12 +17,12 @@ tasks:
   build:
     summary: Builds the application
     cmds:
-      - task: "{{.GOOS}}:build"
+      - task: '{{if eq .GOOS "android"}}android:apk:debug{{else}}windows:build{{end}}'
 
   package:
     summary: Packages a production build of the application
     cmds:
-      - task: "{{.GOOS}}:package"
+      - task: '{{if eq .GOOS "android"}}android:apk:release{{else}}windows:package{{end}}'
 
   run:
     summary: Runs the application

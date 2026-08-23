@@ -28,8 +28,9 @@ tasks:
       TASK_FORCE_YES: '{{if .YES}}true{{else}}false{{end}}'
     prompt: This will check and install Android development dependencies. Continue?
 
-  build:
-    summary: Creates a debug build of the application for Android
+  prepare:
+    internal: true
+    summary: Builds the frontend and Android Go shared library
     deps:
       - task: common:go:mod:tidy
       - task: generate:android:overlay
@@ -48,12 +49,15 @@ tasks:
       - task: compile:go:shared
         vars:
           ARCH: '{{.ARCH | default .DEFAULT_ARCH}}'
+          PRODUCTION:
+            ref: .PRODUCTION
     vars:
       BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
     env:
       PRODUCTION: '{{.PRODUCTION | default "false"}}'
 
   compile:go:shared:
+    internal: true
     summary: Compile Go code to shared library (.so)
     deps:
       - task: generate:android:overlay
@@ -62,97 +66,55 @@ tasks:
     vars:
       BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
 
-  compile:go:all-archs:
-    summary: Compile Go code for all Android architectures (fat APK)
+  apk:debug:
+    summary: Builds an Android debug APK
+    deps:
+      - task: prepare
+        vars:
+          ARCH: '{{.ARCH | default .DEFAULT_ARCH}}'
     cmds:
-      - task: compile:go:shared
-        vars:
-          ARCH: arm64
-      - task: compile:go:shared
-        vars:
-          ARCH: amd64
+      - >-
+        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat assembleDebug; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/apk/debug/app-debug.apk "{{.BIN_DIR}}/{{.APP_NAME}}-debug.apk"; Write-Host "Debug APK created: {{.BIN_DIR}}/{{.APP_NAME}}-debug.apk"'
 
-  package:
-    summary: Packages a production build of the application into a signed release APK
+  apk:release:
+    summary: Builds an Android release APK
     desc: |
-      Builds for arm64 by default (covers 99%+ of real devices). Set ARCH=amd64
-      for emulator-only APKs, or use package:fat for a universal APK.
+      Builds for arm64 by default. Set ARCH=amd64 for an emulator-only APK.
+      A configured Android keystore is required for a production signature;
+      otherwise Gradle falls back to the debug signing key.
     deps:
-      - task: build
+      - task: prepare
         vars:
           PRODUCTION: "true"
-          ARCH: '{{.ARCH | default "arm64"}}'
+          ARCH: '{{.ARCH | default .DEFAULT_ARCH}}'
     cmds:
-      - task: assemble:apk:release
+      - >-
+        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat assembleRelease; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/apk/release/app-release.apk "{{.BIN_DIR}}/{{.APP_NAME}}-release.apk"; Write-Host "Release APK created: {{.BIN_DIR}}/{{.APP_NAME}}-release.apk"'
 
-  package:fat:
-    summary: Packages a production build for all architectures (fat APK)
+  aab:debug:
+    summary: Builds an Android debug AAB
     deps:
-      - task: build
+      - task: prepare
         vars:
-          PRODUCTION: "true"
-          ARCH: arm64
+          ARCH: '{{.ARCH | default .DEFAULT_ARCH}}'
     cmds:
-      - task: compile:go:shared
-        vars:
-          ARCH: amd64
-          PRODUCTION: "true"
-      - task: assemble:apk:release
+      - >-
+        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat bundleDebug; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/bundle/debug/app-debug.aab "{{.BIN_DIR}}/{{.APP_NAME}}-debug.aab"; Write-Host "Debug AAB created: {{.BIN_DIR}}/{{.APP_NAME}}-debug.aab"'
 
-  bundle:
-    summary: Packages a production AAB (Android App Bundle) for Play Store submission
+  aab:release:
+    summary: Builds an Android release AAB for Play Store submission
     desc: |
-      Builds for arm64 by default. Set ARCH=amd64 for emulator builds, or use
-      bundle:fat for a universal AAB.
+      Builds for arm64 by default. Configure ANDROID_KEYSTORE_FILE,
+      ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD
+      before creating an AAB for Play Store upload.
     deps:
-      - task: build
+      - task: prepare
         vars:
           PRODUCTION: "true"
-          ARCH: '{{.ARCH | default "arm64"}}'
-    cmds:
-      - task: assemble:aab:release
-
-  bundle:fat:
-    summary: Packages a production AAB for all architectures
-    deps:
-      - task: build
-        vars:
-          PRODUCTION: "true"
-          ARCH: arm64
-    cmds:
-      - task: compile:go:shared
-        vars:
-          ARCH: amd64
-          PRODUCTION: "true"
-      - task: assemble:aab:release
-
-  assemble:apk:
-    summary: Assembles a debug APK using Gradle
-    deps:
-      - task: build
-        vars:
-          ARCH: '{{.ARCH | default "arm64"}}'
+          ARCH: '{{.ARCH | default .DEFAULT_ARCH}}'
     cmds:
       - >-
-        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat assembleDebug; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/apk/debug/app-debug.apk "{{.BIN_DIR}}/{{.APP_NAME}}.apk"; Write-Host "APK created: {{.BIN_DIR}}/{{.APP_NAME}}.apk"'
-
-  assemble:apk:release:
-    summary: Assembles a release APK using Gradle (signed with the debug keystore unless ANDROID_KEYSTORE_FILE is set)
-    cmds:
-      - >-
-        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat assembleRelease; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/apk/release/app-release.apk "{{.BIN_DIR}}/{{.APP_NAME}}.apk"; Write-Host "Release APK created: {{.BIN_DIR}}/{{.APP_NAME}}.apk"'
-
-  assemble:aab:
-    summary: Assembles a debug AAB (Android App Bundle) using Gradle
-    cmds:
-      - >-
-        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat bundleDebug; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/bundle/debug/app-debug.aab "{{.BIN_DIR}}/{{.APP_NAME}}.aab"; Write-Host "AAB created: {{.BIN_DIR}}/{{.APP_NAME}}.aab"'
-
-  assemble:aab:release:
-    summary: Assembles a release AAB for Play Store upload (signed with the debug keystore unless ANDROID_KEYSTORE_FILE is set)
-    cmds:
-      - >-
-        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; if ([string]::IsNullOrWhiteSpace($env:ANDROID_KEYSTORE_FILE)) { Write-Warning "ANDROID_KEYSTORE_FILE is not set; release AAB uses the debug keystore and is not suitable for Play Store upload." }; Push-Location build/android; try { .\gradlew.bat bundleRelease; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/bundle/release/app-release.aab "{{.BIN_DIR}}/{{.APP_NAME}}.aab"; Write-Host "Release AAB created: {{.BIN_DIR}}/{{.APP_NAME}}.aab"'
+        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; if ([string]::IsNullOrWhiteSpace($env:ANDROID_KEYSTORE_FILE)) { Write-Warning "ANDROID_KEYSTORE_FILE is not set; release AAB uses the debug keystore and is not suitable for Play Store upload." }; Push-Location build/android; try { .\gradlew.bat bundleRelease; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/bundle/release/app-release.aab "{{.BIN_DIR}}/{{.APP_NAME}}-release.aab"; Write-Host "Release AAB created: {{.BIN_DIR}}/{{.APP_NAME}}-release.aab"'
 
   generate:android:overlay:
     internal: true
@@ -192,13 +154,13 @@ tasks:
   deploy-emulator:
     summary: Deploy the packaged release APK to the Android Emulator
     deps:
-      - task: package
+      - task: apk:release
         vars:
           ARCH: '{{.ARCH | default .HOST_ARCH}}'
     cmds:
       - task: ensure-emulator
       - '"{{.ADB}}" uninstall {{.APP_ID}} 2>/dev/null || true'
-      - '"{{.ADB}}" install "{{.BIN_DIR}}/{{.APP_NAME}}.apk"'
+      - '"{{.ADB}}" install "{{.BIN_DIR}}/{{.APP_NAME}}-release.apk"'
       - '"{{.ADB}}" shell am start -n {{.APP_ID}}/com.wails.app.MainActivity'
 
   run:
@@ -206,11 +168,11 @@ tasks:
     deps:
       - task: ensure-emulator
     cmds:
-      - task: assemble:apk
+      - task: apk:debug
         vars:
           ARCH: '{{.HOST_ARCH}}'
       - '"{{.ADB}}" uninstall {{.APP_ID}} 2>/dev/null || true'
-      - '"{{.ADB}}" install "{{.BIN_DIR}}/{{.APP_NAME}}.apk"'
+      - '"{{.ADB}}" install "{{.BIN_DIR}}/{{.APP_NAME}}-debug.apk"'
       - '"{{.ADB}}" shell am start -n {{.APP_ID}}/com.wails.app.MainActivity'
 
   device:list:
@@ -220,12 +182,10 @@ tasks:
 
   run:device:
     summary: Build, install and launch a debug build on a connected physical Android device
-    deps:
-      - task: build
+    cmds:
+      - task: apk:debug
         vars:
           ARCH: arm64
-    cmds:
-      - task: assemble:apk
       - |
         DEVICE='{{.DEVICE_ID | default ""}}'
         if [ -z "$DEVICE" ]; then
@@ -241,9 +201,9 @@ tasks:
           exit 1
         fi
 
-        echo "Deploying {{.BIN_DIR}}/{{.APP_NAME}}.apk to device $DEVICE..."
+        echo "Deploying {{.BIN_DIR}}/{{.APP_NAME}}-debug.apk to device $DEVICE..."
         "{{.ADB}}" -s "$DEVICE" uninstall {{.APP_ID}} 2>/dev/null || true
-        "{{.ADB}}" -s "$DEVICE" install "{{.BIN_DIR}}/{{.APP_NAME}}.apk"
+        "{{.ADB}}" -s "$DEVICE" install "{{.BIN_DIR}}/{{.APP_NAME}}-debug.apk"
         "{{.ADB}}" -s "$DEVICE" shell am start -n {{.APP_ID}}/com.wails.app.MainActivity
     preconditions:
       - sh: '[ -x "{{.ADB}}" ] || command -v adb'
@@ -252,7 +212,7 @@ tasks:
   deploy-device:
     summary: Deploy the packaged release APK to a connected physical Android device
     deps:
-      - task: package
+      - task: apk:release
         vars:
           ARCH: arm64
     cmds:
@@ -271,9 +231,9 @@ tasks:
           exit 1
         fi
 
-        echo "Deploying {{.BIN_DIR}}/{{.APP_NAME}}.apk to device $DEVICE..."
+        echo "Deploying {{.BIN_DIR}}/{{.APP_NAME}}-release.apk to device $DEVICE..."
         "{{.ADB}}" -s "$DEVICE" uninstall {{.APP_ID}} 2>/dev/null || true
-        "{{.ADB}}" -s "$DEVICE" install "{{.BIN_DIR}}/{{.APP_NAME}}.apk"
+        "{{.ADB}}" -s "$DEVICE" install "{{.BIN_DIR}}/{{.APP_NAME}}-release.apk"
         "{{.ADB}}" -s "$DEVICE" shell am start -n {{.APP_ID}}/com.wails.app.MainActivity
     preconditions:
       - sh: '[ -x "{{.ADB}}" ] || command -v adb'
