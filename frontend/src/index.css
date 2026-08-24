@@ -311,6 +311,15 @@ body {
   display: flex !important;
 }
 
+/* 缓冲时只显示加载动画，不对正在显示的视频画面添加任何遮挡。 */
+.video-player-frame .media-default-skin .media-buffering-indicator[data-visible] ~ .media-overlay {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  opacity: 0;
+  transition: none;
+}
+
 .video-fullscreen-hud {
   position: absolute;
   top: 0;

@@ -1,16 +1,16 @@
 version: '3'
 
-# Shared build steps used by the Windows and Android targets.
+# Windows 和 Android 共用的构建步骤。
 tasks:
   go:mod:tidy:
-    summary: Runs `go mod tidy`
+    summary: 整理 Go 模块依赖
     internal: true
     run: once
     cmds:
       - go mod tidy
 
   install:frontend:deps:
-    summary: Installs frontend dependencies with pnpm
+    summary: 使用 pnpm 安装前端依赖
     internal: true
     run: once
     dir: frontend
@@ -21,12 +21,12 @@ tasks:
       - node_modules/**/*
     preconditions:
       - sh: pnpm --version
-        msg: "pnpm not found"
+        msg: "未找到 pnpm"
     cmds:
       - pnpm install
 
   generate:bindings:
-    summary: Generates TypeScript bindings for the frontend
+    summary: 为前端生成 TypeScript 绑定
     internal: true
     run: once
     deps:
@@ -41,7 +41,7 @@ tasks:
       - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true{{if eq .OBFUSCATED "true"}} -obfuscated{{end}} -ts -i
 
   build:frontend:
-    summary: Builds the frontend with pnpm
+    summary: 使用 pnpm 构建前端
     internal: true
     run: once
     dir: frontend

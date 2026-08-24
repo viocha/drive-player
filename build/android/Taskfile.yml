@@ -7,13 +7,13 @@ vars:
   APP_ID: '{{.APP_ID | default "com.wails.app"}}'
   MIN_SDK: '21'
   TARGET_SDK: '35'
-  # Android builds target physical arm64 devices by default. Override with
-  # `ARCH=x86_64` only when another architecture is explicitly needed.
+  # Android 默认面向 arm64 真机构建。仅在明确需要其他架构时使用
+  # `ARCH=amd64` 覆盖默认值。
   DEFAULT_ARCH: arm64
   HOST_ARCH: '{{ARCH}}'
-  # System-image ABI for the host, used in the "create an AVD" hint below.
+  # 当前主机使用的系统镜像 ABI，供创建 AVD 时使用。
   ANDROID_ABI: '{{if eq .HOST_ARCH "arm64"}}arm64-v8a{{else}}x86_64{{end}}'
-  # Android builds are run from Windows in this project.
+  # 本项目从 Windows 执行 Android 构建。
   SDK_ROOT: '{{if .ANDROID_HOME}}{{.ANDROID_HOME}}{{else if .ANDROID_SDK_ROOT}}{{.ANDROID_SDK_ROOT}}{{else}}{{.HOME}}/AppData/Local/Android/Sdk{{end}}'
   ADB: '{{.SDK_ROOT}}/platform-tools/adb.exe'
   EMULATOR: '{{.SDK_ROOT}}/emulator/emulator.exe'
@@ -21,31 +21,30 @@ vars:
 
 tasks:
   install:deps:
-    summary: Check and install Android development dependencies
+    summary: 检查并安装 Android 开发依赖
     cmds:
       - go run build/android/scripts/deps/install_deps.go
     env:
       TASK_FORCE_YES: '{{if .YES}}true{{else}}false{{end}}'
-    prompt: This will check and install Android development dependencies. Continue?
+    prompt: 即将检查并安装 Android 开发依赖，是否继续？
 
   prepare:
     internal: true
-    summary: Builds the frontend and Android Go shared library
+    summary: 构建前端和 Android Go 共享库
     deps:
       - task: common:go:mod:tidy
       - task: generate:android:overlay
       - task: common:build:frontend
         vars:
-          # TypeScript bindings are platform-neutral. Generating them with
-          # Android build tags from a Windows host makes Wails beta.8's package
-          # loader scan both GOOS implementations and emit spurious conflicts.
-          # Keep binding generation on the host platform; Android tags are only
-          # needed for the native shared-library build below.
+          # TypeScript 绑定与平台无关。从 Windows 主机使用 Android 构建标签
+          # 生成绑定，会导致 Wails beta.8 的包加载器同时扫描两种 GOOS 实现，
+          # 并产生虚假的冲突。绑定生成沿用主机平台；只有下面构建原生共享库时
+          # 才需要 Android 标签。
           BUILD_FLAGS: ''
           PRODUCTION:
             ref: .PRODUCTION
     cmds:
-      - echo "Building Android app {{.APP_NAME}}..."
+      - echo "正在构建 Android 应用 {{.APP_NAME}}……"
       - task: compile:go:shared
         vars:
           ARCH: '{{.ARCH | default .DEFAULT_ARCH}}'
@@ -58,7 +57,7 @@ tasks:
 
   compile:go:shared:
     internal: true
-    summary: Compile Go code to shared library (.so)
+    summary: 将 Go 代码编译为共享库（.so）
     deps:
       - task: generate:android:overlay
     cmds:
@@ -67,21 +66,20 @@ tasks:
       BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
 
   apk:debug:
-    summary: Builds an Android debug APK
+    summary: 构建 Android 调试版 APK
     deps:
       - task: prepare
         vars:
           ARCH: '{{.ARCH | default .DEFAULT_ARCH}}'
     cmds:
       - >-
-        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat assembleDebug; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/apk/debug/app-debug.apk "{{.BIN_DIR}}/{{.APP_NAME}}-debug.apk"; Write-Host "Debug APK created: {{.BIN_DIR}}/{{.APP_NAME}}-debug.apk"'
+        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat assembleDebug; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/apk/debug/app-debug.apk "{{.BIN_DIR}}/{{.APP_NAME}}-debug.apk"; Write-Host "调试版 APK 已生成：{{.BIN_DIR}}/{{.APP_NAME}}-debug.apk"'
 
   apk:release:
-    summary: Builds an Android release APK
+    summary: 构建 Android 发布版 APK
     desc: |
-      Builds for arm64 by default. Set ARCH=amd64 for an emulator-only APK.
-      A configured Android keystore is required for a production signature;
-      otherwise Gradle falls back to the debug signing key.
+      默认面向 arm64 构建。设置 ARCH=amd64 可构建仅供模拟器使用的 APK。
+      正式签名需要配置 Android 密钥库；否则 Gradle 将使用调试签名密钥。
     deps:
       - task: prepare
         vars:
@@ -89,24 +87,24 @@ tasks:
           ARCH: '{{.ARCH | default .DEFAULT_ARCH}}'
     cmds:
       - >-
-        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat assembleRelease; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/apk/release/app-release.apk "{{.BIN_DIR}}/{{.APP_NAME}}-release.apk"; Write-Host "Release APK created: {{.BIN_DIR}}/{{.APP_NAME}}-release.apk"'
+        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat assembleRelease; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/apk/release/app-release.apk "{{.BIN_DIR}}/{{.APP_NAME}}-release.apk"; Write-Host "发布版 APK 已生成：{{.BIN_DIR}}/{{.APP_NAME}}-release.apk"'
 
   aab:debug:
-    summary: Builds an Android debug AAB
+    summary: 构建 Android 调试版 AAB
     deps:
       - task: prepare
         vars:
           ARCH: '{{.ARCH | default .DEFAULT_ARCH}}'
     cmds:
       - >-
-        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat bundleDebug; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/bundle/debug/app-debug.aab "{{.BIN_DIR}}/{{.APP_NAME}}-debug.aab"; Write-Host "Debug AAB created: {{.BIN_DIR}}/{{.APP_NAME}}-debug.aab"'
+        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; Push-Location build/android; try { .\gradlew.bat bundleDebug; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/bundle/debug/app-debug.aab "{{.BIN_DIR}}/{{.APP_NAME}}-debug.aab"; Write-Host "调试版 AAB 已生成：{{.BIN_DIR}}/{{.APP_NAME}}-debug.aab"'
 
   aab:release:
-    summary: Builds an Android release AAB for Play Store submission
+    summary: 构建用于提交 Play Store 的 Android 发布版 AAB
     desc: |
-      Builds for arm64 by default. Configure ANDROID_KEYSTORE_FILE,
-      ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD
-      before creating an AAB for Play Store upload.
+      默认面向 arm64 构建。创建用于上传 Play Store 的 AAB 前，请配置
+      ANDROID_KEYSTORE_FILE、ANDROID_KEYSTORE_PASSWORD、ANDROID_KEY_ALIAS
+      和 ANDROID_KEY_PASSWORD。
     deps:
       - task: prepare
         vars:
@@ -114,11 +112,11 @@ tasks:
           ARCH: '{{.ARCH | default .DEFAULT_ARCH}}'
     cmds:
       - >-
-        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; if ([string]::IsNullOrWhiteSpace($env:ANDROID_KEYSTORE_FILE)) { Write-Warning "ANDROID_KEYSTORE_FILE is not set; release AAB uses the debug keystore and is not suitable for Play Store upload." }; Push-Location build/android; try { .\gradlew.bat bundleRelease; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/bundle/release/app-release.aab "{{.BIN_DIR}}/{{.APP_NAME}}-release.aab"; Write-Host "Release AAB created: {{.BIN_DIR}}/{{.APP_NAME}}-release.aab"'
+        pwsh -NoProfile -Command '$ErrorActionPreference="Stop"; if ([string]::IsNullOrWhiteSpace($env:ANDROID_KEYSTORE_FILE)) { Write-Warning "未设置 ANDROID_KEYSTORE_FILE；发布版 AAB 将使用调试密钥库签名，不能用于上传 Play Store。" }; Push-Location build/android; try { .\gradlew.bat bundleRelease; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }; New-Item -ItemType Directory -Force -Path "{{.BIN_DIR}}" | Out-Null; Copy-Item -Force build/android/app/build/outputs/bundle/release/app-release.aab "{{.BIN_DIR}}/{{.APP_NAME}}-release.aab"; Write-Host "发布版 AAB 已生成：{{.BIN_DIR}}/{{.APP_NAME}}-release.aab"'
 
   generate:android:overlay:
     internal: true
-    summary: Generate Go build overlay that registers the Android main
+    summary: 生成用于注册 Android 主入口的 Go 构建覆盖文件
     sources:
       - build/config.yml
     generates:
@@ -129,7 +127,7 @@ tasks:
 
   generate:android:bindings:
     internal: true
-    summary: Generates bindings for Android
+    summary: 生成 Android 绑定
     sources:
       - "**/*.go"
       - go.mod
@@ -137,8 +135,7 @@ tasks:
     generates:
       - frontend/bindings/**/*
     cmds:
-      # Bindings are generated from the Go AST; CGO is disabled so the NDK
-      # is not required for this step
+      # 绑定根据 Go AST 生成；此步骤禁用 CGO，因此不需要 NDK。
       - wails3 generate bindings -f '-tags android' -clean=true
     env:
       GOOS: android
@@ -146,13 +143,13 @@ tasks:
 
   ensure-emulator:
     internal: true
-    summary: Ensure Android Emulator is running
+    summary: 确保 Android 模拟器正在运行
     silent: true
     cmds:
       - pwsh -NoProfile -File build/android/scripts/ensure_emulator_windows.ps1 -SdkRoot "{{.SDK_ROOT}}"
 
   deploy-emulator:
-    summary: Deploy the packaged release APK to the Android Emulator
+    summary: 将发布版 APK 部署到 Android 模拟器
     deps:
       - task: apk:release
         vars:
@@ -164,7 +161,7 @@ tasks:
       - '"{{.ADB}}" shell am start -n {{.APP_ID}}/com.wails.app.MainActivity'
 
   run:
-    summary: Build, install and launch a debug build in the Android Emulator
+    summary: 在 Android 模拟器中构建、安装并启动调试版
     deps:
       - task: ensure-emulator
     cmds:
@@ -176,12 +173,12 @@ tasks:
       - '"{{.ADB}}" shell am start -n {{.APP_ID}}/com.wails.app.MainActivity'
 
   device:list:
-    summary: Lists connected Android devices and emulators (serials)
+    summary: 列出已连接的 Android 真机和模拟器（序列号）
     cmds:
       - '"{{.ADB}}" devices -l'
 
   run:device:
-    summary: Build, install and launch a debug build on a connected physical Android device
+    summary: 在已连接的 Android 真机上构建、安装并启动调试版
     cmds:
       - task: apk:debug
         vars:
@@ -195,22 +192,22 @@ tasks:
           DEVICE=$("{{.ADB}}" devices | awk 'NR > 1 && $2 == "device" && $1 !~ /^emulator-/ { print $1; exit }')
         fi
         if [ -z "$DEVICE" ]; then
-          echo "Error: no connected physical Android device found."
-          echo "Pass DEVICE_ID=<serial> to target a device explicitly."
-          echo "Find connected device serials with: {{.ADB}} devices"
+          echo "错误：未找到已连接的 Android 真机。"
+          echo "请传入 DEVICE_ID=<序列号> 以明确指定设备。"
+          echo "可使用以下命令查看设备序列号：{{.ADB}} devices"
           exit 1
         fi
 
-        echo "Deploying {{.BIN_DIR}}/{{.APP_NAME}}-debug.apk to device $DEVICE..."
+        echo "正在将 {{.BIN_DIR}}/{{.APP_NAME}}-debug.apk 部署到设备 $DEVICE……"
         "{{.ADB}}" -s "$DEVICE" uninstall {{.APP_ID}} 2>/dev/null || true
         "{{.ADB}}" -s "$DEVICE" install "{{.BIN_DIR}}/{{.APP_NAME}}-debug.apk"
         "{{.ADB}}" -s "$DEVICE" shell am start -n {{.APP_ID}}/com.wails.app.MainActivity
     preconditions:
       - sh: '[ -x "{{.ADB}}" ] || command -v adb'
-        msg: "adb not found. Install the Android SDK platform-tools (or set ANDROID_HOME)"
+        msg: "未找到 adb。请安装 Android SDK Platform Tools，或设置 ANDROID_HOME"
 
   deploy-device:
-    summary: Deploy the packaged release APK to a connected physical Android device
+    summary: 将发布版 APK 部署到已连接的 Android 真机
     deps:
       - task: apk:release
         vars:
@@ -225,37 +222,37 @@ tasks:
           DEVICE=$("{{.ADB}}" devices | awk 'NR > 1 && $2 == "device" && $1 !~ /^emulator-/ { print $1; exit }')
         fi
         if [ -z "$DEVICE" ]; then
-          echo "Error: no connected physical Android device found."
-          echo "Pass DEVICE_ID=<serial> to target a device explicitly."
-          echo "Find connected device serials with: {{.ADB}} devices"
+          echo "错误：未找到已连接的 Android 真机。"
+          echo "请传入 DEVICE_ID=<序列号> 以明确指定设备。"
+          echo "可使用以下命令查看设备序列号：{{.ADB}} devices"
           exit 1
         fi
 
-        echo "Deploying {{.BIN_DIR}}/{{.APP_NAME}}-release.apk to device $DEVICE..."
+        echo "正在将 {{.BIN_DIR}}/{{.APP_NAME}}-release.apk 部署到设备 $DEVICE……"
         "{{.ADB}}" -s "$DEVICE" uninstall {{.APP_ID}} 2>/dev/null || true
         "{{.ADB}}" -s "$DEVICE" install "{{.BIN_DIR}}/{{.APP_NAME}}-release.apk"
         "{{.ADB}}" -s "$DEVICE" shell am start -n {{.APP_ID}}/com.wails.app.MainActivity
     preconditions:
       - sh: '[ -x "{{.ADB}}" ] || command -v adb'
-        msg: "adb not found. Install the Android SDK platform-tools (or set ANDROID_HOME)"
+        msg: "未找到 adb。请安装 Android SDK Platform Tools，或设置 ANDROID_HOME"
 
   studio:
-    summary: Open the generated Android project in Android Studio
+    summary: 使用 Android Studio 打开生成的 Android 项目
     cmds:
       - >-
-        pwsh -NoProfile -Command '$studio = Get-Command studio64.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1; if (-not $studio) { $candidate = Join-Path $env:ProgramFiles "Android\Android Studio\bin\studio64.exe"; if (Test-Path -LiteralPath $candidate) { $studio = $candidate } }; if (-not $studio) { throw "Android Studio not found" }; Start-Process -FilePath $studio -ArgumentList (Resolve-Path "build/android").Path'
+        pwsh -NoProfile -Command '$studio = Get-Command studio64.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1; if (-not $studio) { $candidate = Join-Path $env:ProgramFiles "Android\Android Studio\bin\studio64.exe"; if (Test-Path -LiteralPath $candidate) { $studio = $candidate } }; if (-not $studio) { throw "未找到 Android Studio" }; Start-Process -FilePath $studio -ArgumentList (Resolve-Path "build/android").Path'
 
   logs:
-    summary: Stream Android logcat filtered to this app
+    summary: 持续显示已筛选到当前应用的 Android logcat 日志
     cmds:
       - '"{{.ADB}}" logcat -v time | grep -E "(Wails|{{.APP_NAME}})" || true'
 
   logs:all:
-    summary: Stream all Android logcat (verbose)
+    summary: 持续显示全部 Android logcat 详细日志
     cmds:
       - '"{{.ADB}}" logcat -v time'
 
   clean:
-    summary: Clean build artifacts
+    summary: 清理构建产物
     cmds:
       - pwsh -NoProfile -Command 'Remove-Item -Recurse -Force "{{.BIN_DIR}}", "build/android/app/build", "build/android/.gradle" -ErrorAction SilentlyContinue; Get-ChildItem "build/android/app/src/main/jniLibs" -Filter libwails.so -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force'

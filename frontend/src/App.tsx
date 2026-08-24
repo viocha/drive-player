@@ -91,6 +91,12 @@ import { DriveVideoSkin } from "@/components/drive-video-skin";
 import { analyzeVideoMetadata, type VideoMediaMetadata } from "@/lib/video-metadata";
 
 const Player = createPlayer({ features: videoFeatures });
+const GESTURE_ACTIVATION_DISTANCE = 8;
+const GESTURE_SEEK_DISTANCE_PX = 1;
+
+function removeGestureActivationDistance(delta: number) {
+  return Math.sign(delta) * Math.max(0, Math.abs(delta) - GESTURE_ACTIVATION_DISTANCE);
+}
 
 const VIDEO_EXTENSIONS = new Set([
   "mp4",
@@ -597,9 +603,9 @@ function VideoPlayer({
     mode: GestureMode;
     startX: number;
     startY: number;
-    startTime: number;
     startBrightness: number;
     targetTime: number;
+    lastSeekX: number;
     side: boolean;
     rect: DOMRect;
     viewportWidth: number;
@@ -1000,6 +1006,7 @@ function VideoPlayer({
     const systemTouchIds = new Set<number>();
     let suppressSystemGestureClickUntil = 0;
     let suppressLongPressClickUntil = 0;
+    let suppressPlayerGestureClickUntil = 0;
     let longPressTimer: number | null = null;
     let longPress: {
       pointerId: number;
@@ -1119,6 +1126,7 @@ function VideoPlayer({
       if (isControlsTarget(event.target)) return;
       startLongPress(event, video);
       if (!isAndroid) return;
+      if (event.pointerType === "mouse" || !event.isPrimary) return;
       // A new gesture owns the feedback lifetime. Cancel the previous release
       // timer immediately so rapid swipe/release/swipe sequences cannot have an
       // old timeout hide the new brightness indicator.
@@ -1138,9 +1146,9 @@ function VideoPlayer({
         mode: "pending",
         startX: event.clientX,
         startY: event.clientY,
-        startTime: video.currentTime,
         startBrightness,
         targetTime: video.currentTime,
+        lastSeekX: event.clientX,
         side,
         rect,
         viewportWidth: Math.max(1, window.visualViewport?.width ?? window.innerWidth ?? rect.width),
@@ -1166,7 +1174,7 @@ function VideoPlayer({
           event.stopImmediatePropagation();
           return;
         }
-        if (Math.hypot(dx, dy) >= 8) {
+        if (Math.hypot(dx, dy) >= GESTURE_ACTIVATION_DISTANCE) {
           clearLongPressTimer();
           longPress = null;
         }
@@ -1181,13 +1189,13 @@ function VideoPlayer({
       const absX = Math.abs(dx);
       const absY = Math.abs(dy);
       if (current.mode === "pending") {
-        if (absX >= 8 && absX > absY * 1.05) {
+        if (absX >= GESTURE_ACTIVATION_DISTANCE && absX > absY * 1.05) {
           current.mode = "seek";
+          current.lastSeekX = event.clientX;
           hudGestureDraggingRef.current = true;
-          hudSeekPendingRef.current = true;
           hideGestureFeedback();
         }
-        else if (current.side && absY >= 8 && absY > absX * 1.05) {
+        else if (current.side && absY >= GESTURE_ACTIVATION_DISTANCE && absY > absX * 1.05) {
           if (androidBridge()?.playerEnsureBrightnessAccess?.() === false) {
             gesture.current = null;
             return;
@@ -1202,7 +1210,8 @@ function VideoPlayer({
       event.stopImmediatePropagation();
 
       if (current.mode === "brightness") {
-        const rawPercent = (current.startBrightness - dy / current.rect.height) * 100;
+        const brightnessDY = removeGestureActivationDistance(dy);
+        const rawPercent = (current.startBrightness - brightnessDY / current.rect.height) * 100;
         const percent = Math.max(5, Math.min(100, Math.round(rawPercent / 5) * 5));
         androidBridge()?.playerSetBrightness?.(percent);
         showGestureFeedback(`亮度 ${percent}%`);
@@ -1211,16 +1220,20 @@ function VideoPlayer({
 
       const duration = video.duration;
       if (!Number.isFinite(duration) || duration <= 0) return;
+      const pendingSeekDX = event.clientX - current.lastSeekX;
       current.targetTime = Math.max(
         0,
-        Math.min(duration, current.startTime + (dx / current.viewportWidth) * duration),
+        Math.min(duration, video.currentTime + (pendingSeekDX / current.viewportWidth) * duration),
       );
-      hudSeekPendingRef.current = true;
-      if (fullscreenHUDVisible) {
-        setHUDProgress({ position: current.targetTime, duration });
+      // 只按累计滑动距离触发 seek，避免刷新率、停留时间或原地抖动改变进度。
+      if (Math.abs(pendingSeekDX) >= GESTURE_SEEK_DISTANCE_PX) {
+        current.lastSeekX = event.clientX;
+        hudSeekPendingRef.current = true;
+        if (fullscreenHUDVisible) {
+          setHUDProgress({ position: current.targetTime, duration });
+        }
+        video.currentTime = current.targetTime;
       }
-      // Seek continuously so the decoder can load/display frames while the finger moves.
-      video.currentTime = current.targetTime;
     };
 
     const finishPointer = (event: PointerEvent) => {
@@ -1261,6 +1274,7 @@ function VideoPlayer({
       if (current.mode === "seek") {
         const video = videoRef.current;
         hudGestureDraggingRef.current = false;
+        suppressPlayerGestureClickUntil = performance.now() + 600;
         if (video?.seeking) {
           hudSeekPendingRef.current = true;
         } else if (video) {
@@ -1274,6 +1288,7 @@ function VideoPlayer({
         return;
       }
       if (current.mode === "brightness") {
+        suppressPlayerGestureClickUntil = performance.now() + 600;
         event.preventDefault();
         event.stopImmediatePropagation();
         scheduleGestureFeedbackHide();
@@ -1320,7 +1335,11 @@ function VideoPlayer({
 
     const onClick = (event: MouseEvent) => {
       const now = performance.now();
-      if (now >= suppressSystemGestureClickUntil && now >= suppressLongPressClickUntil) return;
+      if (
+        now >= suppressSystemGestureClickUntil
+        && now >= suppressLongPressClickUntil
+        && now >= suppressPlayerGestureClickUntil
+      ) return;
       event.preventDefault();
       event.stopImmediatePropagation();
     };
@@ -1343,6 +1362,9 @@ function VideoPlayer({
 
     return () => {
       resetLongPress(true);
+      gesture.current = null;
+      hudGestureDraggingRef.current = false;
+      hudSeekPendingRef.current = false;
       clearGestureFeedbackHideTimer();
       frame.removeEventListener("pointerdown", onPointerDown, true);
       frame.removeEventListener("pointermove", onPointerMove, true);
@@ -1414,6 +1436,13 @@ function VideoPlayer({
               }
             }}
             onTimeUpdate={(event) => {
+              if (
+                hudSeekPendingRef.current
+                && !event.currentTarget.seeking
+                && !hudSliderDraggingRef.current
+              ) {
+                hudSeekPendingRef.current = false;
+              }
               if (fullscreenHUDVisible && !hudSeekPendingRef.current) {
                 setHUDProgress({ position: event.currentTarget.currentTime, duration: event.currentTarget.duration });
               }
@@ -1422,7 +1451,12 @@ function VideoPlayer({
               }
             }}
             onSeeked={(event) => {
-              if (hudGestureDraggingRef.current || hudSliderDraggingRef.current) return;
+              if (hudSliderDraggingRef.current) return;
+              if (hudGestureDraggingRef.current) {
+                hudSeekPendingRef.current = false;
+                setHUDProgress({ position: event.currentTarget.currentTime, duration: event.currentTarget.duration });
+                return;
+              }
               hudSliderDraggingRef.current = false;
               hudSeekPendingRef.current = false;
               setHUDProgress({ position: event.currentTarget.currentTime, duration: event.currentTarget.duration });

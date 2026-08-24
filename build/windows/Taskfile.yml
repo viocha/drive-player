@@ -4,16 +4,16 @@ includes:
   common: ../Taskfile.yml
 
 vars:
-  # Signing configuration - edit these values for your project
+  # 签名配置——请根据项目修改以下值
   # SIGN_CERTIFICATE: "path/to/certificate.pfx"
-  # SIGN_THUMBPRINT: "certificate-thumbprint"  # Alternative to SIGN_CERTIFICATE
+  # SIGN_THUMBPRINT: "certificate-thumbprint"  # SIGN_CERTIFICATE 的替代方案
   # TIMESTAMP_SERVER: "http://timestamp.digicert.com"
   #
-  # Password is stored securely in system keychain. Run: wails3 setup signing
+  # 密码安全地存储在系统钥匙串中。配置命令：wails3 setup signing
 
 tasks:
   build:
-    summary: Builds the application for Windows
+    summary: 构建 Windows 应用
     deps:
       - task: common:go:mod:tidy
       - task: common:build:frontend
@@ -26,7 +26,7 @@ tasks:
             ref: .DEV
     preconditions:
       - sh: '{{if eq .OBFUSCATED "true"}}command -v garble >/dev/null 2>&1{{else}}true{{end}}'
-        msg: "garble is required for obfuscated builds. Install it with: go install mvdan.cc/garble@v0.16.0 (requires Go 1.24+). See https://github.com/burrowers/garble/releases for version/toolchain compatibility."
+        msg: "混淆构建需要 garble。请执行 go install mvdan.cc/garble@v0.16.0 安装（需要 Go 1.24 或更高版本）。版本及工具链兼容性请参阅 https://github.com/burrowers/garble/releases。"
     cmds:
       - task: generate:syso
         vars:
@@ -41,7 +41,7 @@ tasks:
       GOARCH: '{{.ARCH | default ARCH}}'
 
   package:
-    summary: Packages the application
+    summary: 打包 Windows 应用
     cmds:
       - task: '{{if eq (.FORMAT | default "nsis") "msix"}}create:msix:package{{else}}create:nsis:installer{{end}}'
         vars:
@@ -51,7 +51,7 @@ tasks:
       INSTALL_SCOPE: '{{.INSTALL_SCOPE | default "machine"}}'
 
   generate:syso:
-    summary: Generates Windows `.syso` file
+    summary: 生成 Windows `.syso` 文件
     dir: build
     cmds:
       - wails3 generate syso -arch {{.ARCH}} -icon windows/icon.ico -manifest windows/wails.exe.manifest -info windows/info.json -out ../wails_windows_{{.ARCH}}.syso
@@ -59,15 +59,15 @@ tasks:
       ARCH: '{{.ARCH | default ARCH}}'
 
   create:nsis:installer:
-    summary: Creates an NSIS installer
+    summary: 创建 NSIS 安装程序
     dir: build/windows/nsis
     deps:
       - task: build
     preconditions:
       - sh: '[ "{{.INSTALL_SCOPE}}" = "user" ] || [ "{{.INSTALL_SCOPE}}" = "machine" ]'
-        msg: "INSTALL_SCOPE must be 'user' or 'machine', got '{{.INSTALL_SCOPE}}'"
+        msg: "INSTALL_SCOPE 必须是 'user' 或 'machine'，当前值为 '{{.INSTALL_SCOPE}}'"
     cmds:
-      # Create the Microsoft WebView2 bootstrapper if it doesn't exist
+      # 如果 Microsoft WebView2 引导程序不存在，则创建它。
       - wails3 generate webview2bootstrapper -dir "{{.ROOT_DIR}}/build/windows/nsis"
       - makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" project.nsi
     vars:
@@ -76,7 +76,7 @@ tasks:
       INSTALL_SCOPE: '{{.INSTALL_SCOPE | default "machine"}}'
 
   create:msix:package:
-    summary: Creates an MSIX package
+    summary: 创建 MSIX 安装包
     deps:
       - task: build
     cmds:
@@ -97,35 +97,36 @@ tasks:
       USE_MSIX_TOOL: '{{.USE_MSIX_TOOL | default "false"}}'
 
   install:msix:tools:
-    summary: Installs tools required for MSIX packaging
+    summary: 安装创建 MSIX 所需的工具
     cmds:
       - wails3 tool msix-install-tools
 
   run:
+    summary: 运行 Windows 应用
     cmds:
       - '{{.BIN_DIR}}/{{.APP_NAME}}.exe'
 
   sign:
-    summary: Signs the Windows executable
+    summary: 为 Windows 可执行文件签名
     desc: |
-      Signs the .exe with an Authenticode certificate.
-      Set SIGN_CERTIFICATE or SIGN_THUMBPRINT to override the certificate
-      configured globally via `wails3 setup` (~/.config/wails/defaults.yaml).
-      Password is retrieved from system keychain (run: wails3 setup signing)
+      使用 Authenticode 证书为 .exe 文件签名。
+      设置 SIGN_CERTIFICATE 或 SIGN_THUMBPRINT 可覆盖通过 `wails3 setup`
+      在全局配置的证书（~/.config/wails/defaults.yaml）。
+      密码从系统钥匙串读取（配置命令：wails3 setup signing）。
     deps:
       - task: build
     cmds:
-      # Certificate vars are optional: if unset, `wails3 tool sign` falls back to
-      # the certificate configured globally via `wails3 setup`.
+      # 证书变量为可选项；未设置时，`wails3 tool sign` 将使用通过
+      # `wails3 setup` 在全局配置的证书。
       - wails3 tool sign --input "{{.BIN_DIR}}/{{.APP_NAME}}.exe" {{if .SIGN_CERTIFICATE}}--certificate "{{.SIGN_CERTIFICATE}}"{{end}} {{if .SIGN_THUMBPRINT}}--thumbprint "{{.SIGN_THUMBPRINT}}"{{end}} {{if .TIMESTAMP_SERVER}}--timestamp "{{.TIMESTAMP_SERVER}}"{{end}}
 
   sign:installer:
-    summary: Signs the NSIS installer
+    summary: 为 NSIS 安装程序签名
     desc: |
-      Creates and signs the NSIS installer.
-      Set SIGN_CERTIFICATE or SIGN_THUMBPRINT to override the certificate
-      configured globally via `wails3 setup` (~/.config/wails/defaults.yaml).
-      Password is retrieved from system keychain (run: wails3 setup signing)
+      创建 NSIS 安装程序并为其签名。
+      设置 SIGN_CERTIFICATE 或 SIGN_THUMBPRINT 可覆盖通过 `wails3 setup`
+      在全局配置的证书（~/.config/wails/defaults.yaml）。
+      密码从系统钥匙串读取（配置命令：wails3 setup signing）。
     deps:
       - task: create:nsis:installer
         vars:

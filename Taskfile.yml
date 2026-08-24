@@ -4,8 +4,8 @@ vars:
   APP_NAME: "drive-player"
   BIN_DIR: "bin"
   VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
-  # This project supports Windows and Android only. On Windows the default is
-  # the desktop build; pass GOOS=android to the generic build/package/run tasks.
+  # 本项目只支持 Windows 和 Android。在 Windows 上默认构建桌面版；
+  # 为通用的 build/package/run 任务传入 GOOS=android 可切换到 Android。
   GOOS: '{{.GOOS | default OS}}'
 
 includes:
@@ -15,21 +15,21 @@ includes:
 
 tasks:
   build:
-    summary: Builds the application
+    summary: 构建应用
     cmds:
       - task: '{{if eq .GOOS "android"}}android:apk:debug{{else}}windows:build{{end}}'
 
   package:
-    summary: Packages a production build of the application
+    summary: 打包应用的发布版本
     cmds:
       - task: '{{if eq .GOOS "android"}}android:apk:release{{else}}windows:package{{end}}'
 
   run:
-    summary: Runs the application
+    summary: 运行应用
     cmds:
       - task: "{{.GOOS}}:run"
 
   dev:
-    summary: Runs the application in development mode
+    summary: 以开发模式运行应用
     cmds:
       - wails3 dev -config ./build/config.yml -port {{.VITE_PORT}}
