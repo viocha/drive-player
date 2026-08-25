@@ -387,7 +387,7 @@ body {
   background: rgb(255 255 255 / 25%);
 }
 
-.video-player-frame .media-default-skin:has(> .media-controls--root[data-visible]) > .video-mini-progress {
+.video-player-frame .media-player-pane:has(> .media-controls--root[data-visible]) > .video-mini-progress {
   opacity: 0;
 }
 
