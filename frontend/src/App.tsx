@@ -84,7 +84,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Toaster, toast } from "@/components/ui/toast";
-import { DriveVideoSkin } from "@/components/drive-video-skin";
+import { DRIVE_VIDEO_CONTROLS_ACTIVITY_EVENT, DriveVideoSkin } from "@/components/drive-video-skin";
 import { analyzeVideoMetadata, type VideoMediaMetadata } from "@/lib/video-metadata";
 
 const Player = createPlayer({ features: videoFeatures });
@@ -398,20 +398,31 @@ function VideoListPane({
 
   useLayoutEffect(() => {
     if (!active || initiallyCenteredRef.current) return;
-    const viewport = viewportRef.current;
-    if (!viewport || viewport.clientHeight <= 0) return;
-    const currentItem = viewport.querySelector<HTMLElement>('[data-current-video="true"]');
-    if (!currentItem) return;
 
-    const viewportRect = viewport.getBoundingClientRect();
-    const itemRect = currentItem.getBoundingClientRect();
-    const target = viewport.scrollTop
-      + itemRect.top
-      - viewportRect.top
-      - (viewport.clientHeight - itemRect.height) / 2;
-    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-    viewport.scrollTop = Math.max(0, Math.min(maxScrollTop, target));
-    initiallyCenteredRef.current = true;
+    let settleFrame = 0;
+    const layoutFrame = window.requestAnimationFrame(() => {
+      settleFrame = window.requestAnimationFrame(() => {
+        const viewport = viewportRef.current;
+        if (!viewport || viewport.clientHeight <= 0) return;
+        const currentItem = viewport.querySelector<HTMLElement>('[data-current-video="true"]');
+        if (!currentItem) return;
+
+        const viewportRect = viewport.getBoundingClientRect();
+        const itemRect = currentItem.getBoundingClientRect();
+        const target = viewport.scrollTop
+          + itemRect.top
+          - viewportRect.top
+          - (viewport.clientHeight - itemRect.height) / 2;
+        const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+        viewport.scrollTop = Math.max(0, Math.min(maxScrollTop, target));
+        initiallyCenteredRef.current = true;
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(layoutFrame);
+      if (settleFrame) window.cancelAnimationFrame(settleFrame);
+    };
   }, [active, currentPath, videos]);
 
   return (
@@ -1018,6 +1029,11 @@ function VideoPlayer({
       return target instanceof Element && Boolean(target.closest(".video-player-sidebar--fullscreen"));
     };
 
+    const resetVisibleControlsAutoHide = () => {
+      root.querySelector<HTMLElement>(".media-default-skin")
+        ?.dispatchEvent(new Event(DRIVE_VIDEO_CONTROLS_ACTIVITY_EVENT));
+    };
+
     const getSystemGestureGuards = () => {
       let top = 0;
       let bottom = 0;
@@ -1187,6 +1203,7 @@ function VideoPlayer({
           current.lastSeekX = event.clientX;
           hudGestureDraggingRef.current = true;
           hideGestureFeedback();
+          resetVisibleControlsAutoHide();
         }
         else if (current.side && absY >= GESTURE_ACTIVATION_DISTANCE && absY > absX * 1.05) {
           if (androidBridge()?.playerEnsureBrightnessAccess?.() === false) {
@@ -1226,6 +1243,7 @@ function VideoPlayer({
           setHUDProgress({ position: current.targetTime, duration });
         }
         video.currentTime = current.targetTime;
+        resetVisibleControlsAutoHide();
       }
     };
 
@@ -1278,6 +1296,7 @@ function VideoPlayer({
         event.preventDefault();
         event.stopImmediatePropagation();
         hideGestureFeedback();
+        resetVisibleControlsAutoHide();
         return;
       }
       if (current.mode === "brightness") {

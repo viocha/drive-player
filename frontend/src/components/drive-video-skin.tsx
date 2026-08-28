@@ -48,10 +48,8 @@ import {
   useCaptionsOptions,
   Container,
   Controls,
-  createTapGesture,
   ErrorDialog,
   FullscreenButton,
-  Gesture,
   Hotkey,
   Menu,
   MuteButton,
@@ -75,9 +73,62 @@ import {
   VolumeIndicator,
   VolumeSlider,
 } from "@videojs/react";
+import {
+  type AnyPlayerStore,
+  type GestureMatchResult,
+  type GestureRecognizer,
+  getGestureCoordinator,
+  resolveGestureAction,
+} from "@videojs/core/dom";
 
 const TOP_STATUS_ACTIONS = ["toggleSubtitles", "toggleFullscreen", "togglePictureInPicture"] as const;
 const SEEK_TIME = 10;
+const DOUBLE_TAP_WINDOW = 300;
+export const DRIVE_VIDEO_CONTROLS_ACTIVITY_EVENT = "drive-video-controls-activity";
+
+function restartControlsIdle(container: HTMLElement | null): void {
+  if (!container) return;
+  container.dispatchEvent(new PointerEvent("pointermove", { pointerType: "mouse" }));
+}
+
+class DriveTapRecognizer implements GestureRecognizer {
+  private lastTapTime = 0;
+  private tapTimer: number | null = null;
+
+  handleUp(matches: GestureMatchResult, event: PointerEvent): void {
+    if (matches.resolve("doubletap").length === 0) {
+      matches.resolve("tap")[0]?.onActivate(event);
+      return;
+    }
+
+    const now = Date.now();
+    if (now - this.lastTapTime <= DOUBLE_TAP_WINDOW) {
+      this.clearTimer();
+      this.lastTapTime = 0;
+      matches.resolve("doubletap")[0]?.onActivate(event);
+      return;
+    }
+
+    this.lastTapTime = now;
+    this.clearTimer();
+    this.tapTimer = window.setTimeout(() => {
+      this.tapTimer = null;
+      this.lastTapTime = 0;
+      matches.resolve("tap")[0]?.onActivate(event);
+    }, DOUBLE_TAP_WINDOW);
+  }
+
+  reset(): void {
+    this.clearTimer();
+    this.lastTapTime = 0;
+  }
+
+  private clearTimer(): void {
+    if (this.tapTimer === null) return;
+    window.clearTimeout(this.tapTimer);
+    this.tapTimer = null;
+  }
+}
 
 function MenuChevron({ flipped = false }: { flipped?: boolean }): ReactNode {
   return <ChevronIcon className={`media-icon media-menu__chevron ${flipped ? "media-icon--flipped" : ""}`} />;
@@ -483,35 +534,138 @@ export function DriveVideoSkin({
   sidePanelControl,
 }: DriveVideoSkinProps): ReactNode {
   const sidePanelOpen = sidePanelControl?.active === true;
+  const player = usePlayer() as AnyPlayerStore;
   const controls = usePlayer(selectControls);
   const playback = usePlayer(selectPlayback);
   const container = useContainer();
   const controlsRef = useRef(controls);
   const playbackPausedRef = useRef(playback?.paused ?? false);
+  const previousPlaybackPausedRef = useRef(playback?.paused ?? false);
   const [pausedTouchControlsVisible, setPausedTouchControlsVisible] = useState<boolean | null>(null);
+  const pausedTouchControlsVisibleRef = useRef<boolean | null>(null);
   controlsRef.current = controls;
   playbackPausedRef.current = playback?.paused ?? false;
+  pausedTouchControlsVisibleRef.current = pausedTouchControlsVisible;
 
   useEffect(() => {
     if (!container) return;
-    return createTapGesture(
-      container,
-      () => {
+
+    const recognizer = new DriveTapRecognizer();
+    const coordinator = getGestureCoordinator(container);
+    const cleanups: Array<() => void> = [];
+    const addAction = (
+      type: "tap" | "doubletap",
+      action: string,
+      value?: number,
+      pointer?: "mouse" | "touch" | "pen",
+      region?: "left" | "center" | "right",
+    ) => {
+      const resolver = resolveGestureAction(action);
+      if (!resolver) return;
+      cleanups.push(coordinator.add({
+        type,
+        recognizer,
+        action,
+        value,
+        pointer,
+        region,
+        onActivate: (event) => {
+          if (mobile && action === "togglePaused") {
+            if (playbackPausedRef.current) {
+              if (pausedTouchControlsVisibleRef.current === true) {
+                restartControlsIdle(container);
+              }
+            } else if (controlsRef.current?.userActive) {
+              pausedTouchControlsVisibleRef.current = true;
+              setPausedTouchControlsVisible(true);
+            }
+          }
+          if (
+            mobile
+            && type === "doubletap"
+            && action === "seekStep"
+            && !playbackPausedRef.current
+            && controlsRef.current?.userActive
+          ) {
+            restartControlsIdle(container);
+          }
+          resolver({ store: player, value, event });
+        },
+      }));
+    };
+
+    cleanups.push(coordinator.add({
+      type: "tap",
+      recognizer,
+      action: "toggleControls",
+      pointer: "touch",
+      onActivate: () => {
         const currentControls = controlsRef.current;
         if (!currentControls) return;
         if (mobile && playbackPausedRef.current) {
-          setPausedTouchControlsVisible((current) => !(current ?? currentControls.userActive));
+          const currentVisible = pausedTouchControlsVisibleRef.current ?? currentControls.userActive;
+          const nextVisible = !currentVisible;
+          pausedTouchControlsVisibleRef.current = nextVisible;
+          setPausedTouchControlsVisible(nextVisible);
+          if (nextVisible) {
+            restartControlsIdle(container);
+          } else if (currentControls.userActive) {
+            currentControls.toggleControls();
+          }
           return;
         }
         currentControls.toggleControls();
       },
-      { pointer: "touch", action: "toggleControls" },
-    );
-  }, [container, mobile]);
+    }));
+    addAction("tap", "togglePaused", undefined, "mouse", "center");
+    addAction("doubletap", "seekStep", -SEEK_TIME, undefined, "left");
+    addAction("doubletap", nativeFullscreen ? "togglePaused" : "toggleFullscreen", undefined, undefined, "center");
+    addAction("doubletap", "seekStep", SEEK_TIME, undefined, "right");
+
+    return () => {
+      cleanups.forEach((cleanup) => cleanup());
+      recognizer.reset();
+    };
+  }, [container, mobile, nativeFullscreen, player]);
 
   useEffect(() => {
-    if (!playback?.paused) setPausedTouchControlsVisible(null);
-  }, [playback?.paused]);
+    const paused = playback?.paused ?? false;
+    const wasPaused = previousPlaybackPausedRef.current;
+    previousPlaybackPausedRef.current = paused;
+
+    if (!mobile) {
+      pausedTouchControlsVisibleRef.current = null;
+      setPausedTouchControlsVisible(null);
+      return;
+    }
+
+    if (!wasPaused && paused) {
+      if (controlsRef.current?.userActive) {
+        pausedTouchControlsVisibleRef.current = true;
+        setPausedTouchControlsVisible(true);
+      }
+      return;
+    }
+
+    if (wasPaused && !paused) {
+      if (pausedTouchControlsVisibleRef.current === true) {
+        restartControlsIdle(container);
+      }
+      pausedTouchControlsVisibleRef.current = null;
+      setPausedTouchControlsVisible(null);
+    }
+  }, [container, mobile, playback?.paused]);
+
+  useEffect(() => {
+    if (!mobile || !container) return;
+    const onExternalControlsActivity = () => {
+      if (playbackPausedRef.current) return;
+      if (!controlsRef.current?.userActive) return;
+      restartControlsIdle(container);
+    };
+    container.addEventListener(DRIVE_VIDEO_CONTROLS_ACTIVITY_EVENT, onExternalControlsActivity);
+    return () => container.removeEventListener(DRIVE_VIDEO_CONTROLS_ACTIVITY_EVENT, onExternalControlsActivity);
+  }, [container, mobile]);
 
   return (
     <Container
@@ -549,11 +703,10 @@ export function DriveVideoSkin({
           <div
             {...props}
             data-visible={
-              state.visible
-              && (
-                mobile && playback?.paused && pausedTouchControlsVisible !== null
+              (
+                mobile && pausedTouchControlsVisible !== null
                   ? pausedTouchControlsVisible
-                  : state.userActive
+                  : state.visible && state.userActive
               )
                 ? ""
                 : undefined
@@ -673,15 +826,6 @@ export function DriveVideoSkin({
       <Hotkey keys="End" action="seekToPercent" value={100} />
       <Hotkey keys=">" action="speedUp" />
       <Hotkey keys="<" action="speedDown" />
-
-      <Gesture type="tap" action="togglePaused" pointer="mouse" region="center" />
-      <Gesture type="doubletap" action="seekStep" value={-SEEK_TIME} region="left" />
-      <Gesture
-        type="doubletap"
-        action={nativeFullscreen ? "togglePaused" : "toggleFullscreen"}
-        region="center"
-      />
-      <Gesture type="doubletap" action="seekStep" value={SEEK_TIME} region="right" />
 
       <StatusAnnouncer className="media-sr-only" />
       <div className="media-input-feedback">
