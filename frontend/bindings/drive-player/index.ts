@@ -11,10 +11,9 @@ export type {
     FileEntry,
     PlaybackProgressResult,
     PlaybackProgressStats,
-    QuarkIDCacheStats,
-    RedirectCacheEntry,
     VideoMetadataCacheStats,
     VideoMetadataResult,
     VideoSnapshot,
-    VideoSnapshotCacheStats
+    VideoSnapshotCacheStats,
+    WebDAVAccountState
 } from "./models.js";

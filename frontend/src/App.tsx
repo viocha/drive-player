@@ -10,8 +10,9 @@ import {
   FolderOpen,
   HardDrive,
   LoaderCircle,
-  LogOut,
+  Pencil,
   Play,
+  Plus,
   RefreshCw,
   Settings,
   Square,
@@ -24,22 +25,12 @@ import type {
   AppState,
   FileEntry,
   PlaybackProgressStats,
-  QuarkIDCacheStats,
   VideoMetadataCacheStats,
   VideoSnapshot,
   VideoSnapshotCacheStats,
+  WebDAVAccountState,
 } from "../bindings/drive-player";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import {
   Breadcrumb,
@@ -59,7 +50,6 @@ import {
 import {
   Card,
   CardContent,
-  CardDescription,
   CardFooter,
   CardHeader,
   CardTitle,
@@ -68,12 +58,20 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -85,7 +83,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
 import { Toaster, toast } from "@/components/ui/toast";
 import { DriveVideoSkin } from "@/components/drive-video-skin";
 import { analyzeVideoMetadata, type VideoMediaMetadata } from "@/lib/video-metadata";
@@ -145,7 +142,7 @@ type DirectoryCacheStats = {
   totalBytes: number;
 };
 
-type ProviderBrowseStats = {
+type AccountBrowseStats = {
   directoryCache: DirectoryCacheStats;
   scrollPositions: number;
   backHistory: number;
@@ -159,9 +156,9 @@ type DirectoryCacheItem = {
   sizeBytes: number;
 };
 
-type CloudProvider = "123" | "quark";
+type WebDAVAccountID = string;
 
-type ProviderBrowseSession = {
+type AccountBrowseSession = {
   currentPath: string;
   entries: FileEntry[];
   thumbnailImages: Record<string, string>;
@@ -172,7 +169,7 @@ type ProviderBrowseSession = {
   forwardHistory: string[];
 };
 
-function createProviderBrowseSession(): ProviderBrowseSession {
+function createAccountBrowseSession(): AccountBrowseSession {
   return {
     currentPath: "/",
     entries: [],
@@ -183,10 +180,6 @@ function createProviderBrowseSession(): ProviderBrowseSession {
     backHistory: [],
     forwardHistory: [],
   };
-}
-
-function normalizeProvider(value: string): CloudProvider {
-  return value === "quark" ? "quark" : "123";
 }
 
 function loadDirectoryCacheSettings(): DirectoryCacheSettings {
@@ -323,15 +316,15 @@ function VideoSnapshotPane({
       <div className="flex shrink-0 items-center justify-between gap-3 border-b p-3">
         <div className="min-w-0">
           <div className="text-sm font-medium">时间点截图</div>
-          <div className="mt-0.5 text-xs text-muted-foreground">
-            {loading
-              ? "正在读取缓存"
-              : extracting
-              ? `正在提取 ${completedCount}/${plannedCount}`
-              : snapshots.length > 0
-                ? `已缓存 ${snapshots.length} 张`
-                : "按视频时长等分提取原画"}
-          </div>
+          {(loading || extracting || snapshots.length > 0) && (
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              {loading
+                ? "正在读取缓存"
+                : extracting
+                  ? `正在提取 ${completedCount}/${plannedCount}`
+                  : `已缓存 ${snapshots.length} 张`}
+            </div>
+          )}
         </div>
         {(extracting || canExtract) && (
           <Button
@@ -423,9 +416,9 @@ function VideoListPane({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 border-b p-3">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b p-3">
         <div className="text-sm font-medium">同目录视频</div>
-        <div className="mt-0.5 text-xs text-muted-foreground">共 {videos.length} 个视频</div>
+        <div className="shrink-0 text-xs text-muted-foreground">共 {videos.length} 个视频</div>
       </div>
       <ScrollArea viewportRef={viewportRef} className="min-h-0 flex-1">
         <div className="grid gap-1 p-2">
@@ -1803,21 +1796,24 @@ function breadcrumbs(value: string) {
   }));
 }
 
-function LoginView({
-  state,
-  onLogin123,
-  onLoginQuark,
+type WebDAVAccountInput = {
+  name: string;
+  endpoint: string;
+  username: string;
+  password: string;
+};
+
+function EmptyAccountView({
+  onAdd,
   initialError,
 }: {
-  state: AppState;
-  onLogin123: (username: string, password: string) => Promise<void>;
-  onLoginQuark: (cookie: string) => Promise<void>;
+  onAdd: (input: WebDAVAccountInput) => Promise<void>;
   initialError?: string;
 }) {
-  const [provider, setProvider] = useState<"123" | "quark">(state.provider === "quark" ? "quark" : "123");
-  const [username, setUsername] = useState(state.username ?? "");
-  const [password, setPassword] = useState(state.password ?? "");
-  const [quarkCookie, setQuarkCookie] = useState(state.quarkCookie ?? "");
+  const [name, setName] = useState("");
+  const [endpoint, setEndpoint] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(initialError ?? "");
 
@@ -1830,11 +1826,7 @@ function LoginView({
     setSubmitting(true);
     setError("");
     try {
-      if (provider === "quark") {
-        await onLoginQuark(quarkCookie);
-      } else {
-        await onLogin123(username, password);
-      }
+      await onAdd({ name, endpoint, username, password });
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -1849,110 +1841,68 @@ function LoginView({
           <div className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
             <HardDrive className="size-6" />
           </div>
-          <div className="space-y-1.5">
-            <CardTitle className="text-2xl">
-              {provider === "quark" ? "连接夸克网盘" : "连接 123 云盘"}
-            </CardTitle>
-            <CardDescription>
-              {provider === "quark"
-                ? "使用浏览器登录夸克网盘后的 Cookie 登录。"
-                : "使用 123 云盘“第三方挂载”生成的 WebDAV 账号和应用密码登录。"}
-            </CardDescription>
-          </div>
+          <CardTitle className="text-2xl">添加 WebDAV</CardTitle>
         </CardHeader>
         <form onSubmit={submit} className="flex flex-col gap-(--card-spacing)">
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                type="button"
-                variant={provider === "123" ? "default" : "outline"}
-                onClick={() => {
-                  setProvider("123");
-                  setError("");
-                }}
-              >
-                123 云盘
-              </Button>
-              <Button
-                type="button"
-                variant={provider === "quark" ? "default" : "outline"}
-                onClick={() => {
-                  setProvider("quark");
-                  setError("");
-                }}
-              >
-                夸克网盘
-              </Button>
-            </div>
             {error && (
               <Alert variant="destructive">
                 <CircleAlert className="size-4" />
-                <AlertTitle>登录失败</AlertTitle>
+                <AlertTitle>连接失败</AlertTitle>
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
-            {provider === "quark" ? (
-              <div className="grid gap-2">
-                <Label htmlFor="quark-cookie">Cookie</Label>
-                <Textarea
-                  id="quark-cookie"
-                  value={quarkCookie}
-                  onChange={(event) => setQuarkCookie(event.target.value)}
-                  placeholder="粘贴 pan.quark.cn 登录后的完整 Cookie"
-                  className="min-h-36 resize-y font-mono text-xs"
-                  autoFocus
-                  spellCheck={false}
-                />
-                <div className="text-xs text-muted-foreground">
-                  Cookie 会和现有 123 云盘凭据一样保存在本机应用配置中。
-                </div>
-              </div>
-            ) : (
-              <>
-                <div className="grid gap-2">
-                  <Label htmlFor="username">账号</Label>
-                  <Input
-                    id="username"
-                    value={username}
-                    onChange={(event) => setUsername(event.target.value)}
-                    placeholder="WebDAV 账号"
-                    autoComplete="username"
-                    autoFocus
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="password">密码</Label>
-                  <Input
-                    id="password"
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    placeholder="WebDAV 应用密码"
-                    type="password"
-                    autoComplete="current-password"
-                  />
-                </div>
-              </>
-            )}
-            <div className="rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-              <div className="font-medium text-foreground">
-                {provider === "quark" ? "夸克 API" : "WebDAV 地址"}
-              </div>
-              <div className="mt-1 break-all font-mono">
-                {provider === "quark" ? state.quarkEndpoint : state.endpoint}
-              </div>
+            <div className="grid gap-2">
+              <Label htmlFor="webdav-name">名称</Label>
+              <Input
+                id="webdav-name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="WebDAV"
+                autoFocus
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="webdav-endpoint">WebDAV 地址</Label>
+              <Input
+                id="webdav-endpoint"
+                value={endpoint}
+                onChange={(event) => setEndpoint(event.target.value)}
+                placeholder="http://localhost:9000/dav"
+                inputMode="url"
+                spellCheck={false}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="webdav-username">账号</Label>
+              <Input
+                id="webdav-username"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                placeholder="可选"
+                autoComplete="username"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="webdav-password">密码</Label>
+              <Input
+                id="webdav-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="可选"
+                type="password"
+                autoComplete="current-password"
+              />
             </div>
           </CardContent>
           <CardFooter>
             <Button
               className="w-full"
               type="submit"
-              disabled={
-                submitting ||
-                (provider === "quark" ? quarkCookie.trim().length === 0 : !username || !password)
-              }
+              disabled={submitting || !name.trim() || !endpoint.trim()}
             >
               {submitting && <LoaderCircle className="animate-spin" />}
-              登录并浏览文件
+              添加并浏览
             </Button>
           </CardFooter>
         </form>
@@ -1961,22 +1911,19 @@ function LoginView({
   );
 }
 
-function AccountLoginDialog({
-  provider,
-  state,
+function WebDAVAccountDialog({
+  account,
   onClose,
-  onLogin123,
-  onLoginQuark,
+  onSave,
 }: {
-  provider: "123" | "quark";
-  state: AppState;
+  account: WebDAVAccountState | null;
   onClose: () => void;
-  onLogin123: (username: string, password: string) => Promise<void>;
-  onLoginQuark: (cookie: string) => Promise<void>;
+  onSave: (input: WebDAVAccountInput) => Promise<void>;
 }) {
-  const [username, setUsername] = useState(state.username ?? "");
-  const [password, setPassword] = useState(state.password ?? "");
-  const [quarkCookie, setQuarkCookie] = useState(state.quarkCookie ?? "");
+  const [name, setName] = useState(account?.name ?? "");
+  const [endpoint, setEndpoint] = useState(account?.endpoint ?? "");
+  const [username, setUsername] = useState(account?.username ?? "");
+  const [password, setPassword] = useState(account?.password ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -1985,11 +1932,7 @@ function AccountLoginDialog({
     setSubmitting(true);
     setError("");
     try {
-      if (provider === "quark") {
-        await onLoginQuark(quarkCookie);
-      } else {
-        await onLogin123(username, password);
-      }
+      await onSave({ name, endpoint, username, password });
       onClose();
     } catch (err) {
       setError(errorMessage(err));
@@ -2007,68 +1950,63 @@ function AccountLoginDialog({
     >
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{provider === "quark" ? "登录夸克网盘" : "登录 123 云盘"}</DialogTitle>
-          <DialogDescription>
-            {provider === "quark"
-              ? "登录后会和 123 云盘同时保持在线，可从顶部随时切换。"
-              : "登录后会和夸克网盘同时保持在线，可从顶部随时切换。"}
-          </DialogDescription>
+          <DialogTitle>{account ? "编辑 WebDAV" : "添加 WebDAV"}</DialogTitle>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">
           {error && (
             <Alert variant="destructive">
               <CircleAlert className="size-4" />
-              <AlertTitle>登录失败</AlertTitle>
+              <AlertTitle>保存失败</AlertTitle>
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
-          {provider === "quark" ? (
-            <div className="grid gap-2">
-              <Label htmlFor="account-quark-cookie">Cookie</Label>
-              <Textarea
-                id="account-quark-cookie"
-                value={quarkCookie}
-                onChange={(event) => setQuarkCookie(event.target.value)}
-                placeholder="粘贴 pan.quark.cn 登录后的完整 Cookie"
-                className="min-h-36 resize-y font-mono text-xs"
-                autoFocus
-                spellCheck={false}
-              />
-            </div>
-          ) : (
-            <>
-              <div className="grid gap-2">
-                <Label htmlFor="account-123-username">账号</Label>
-                <Input
-                  id="account-123-username"
-                  value={username}
-                  onChange={(event) => setUsername(event.target.value)}
-                  placeholder="WebDAV 账号"
-                  autoFocus
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="account-123-password">密码</Label>
-                <Input
-                  id="account-123-password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  placeholder="WebDAV 应用密码"
-                  type="password"
-                />
-              </div>
-            </>
-          )}
+          <div className="grid gap-2">
+            <Label htmlFor="account-webdav-name">名称</Label>
+            <Input
+              id="account-webdav-name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="WebDAV"
+              autoFocus
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="account-webdav-endpoint">WebDAV 地址</Label>
+            <Input
+              id="account-webdav-endpoint"
+              value={endpoint}
+              onChange={(event) => setEndpoint(event.target.value)}
+              placeholder="http://localhost:9000/dav"
+              inputMode="url"
+              spellCheck={false}
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="account-webdav-username">账号</Label>
+            <Input
+              id="account-webdav-username"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="可选"
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="account-webdav-password">密码</Label>
+            <Input
+              id="account-webdav-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="可选"
+              type="password"
+            />
+          </div>
           <Button
             className="w-full"
             type="submit"
-            disabled={
-              submitting ||
-              (provider === "quark" ? quarkCookie.trim().length === 0 : !username || !password)
-            }
+            disabled={submitting || !name.trim() || !endpoint.trim()}
           >
             {submitting && <LoaderCircle className="animate-spin" />}
-            登录
+            保存
           </Button>
         </form>
       </DialogContent>
@@ -2093,29 +2031,15 @@ function App() {
   const [refreshingVideoMetadataPaths, setRefreshingVideoMetadataPaths] = useState<Set<string>>(() => new Set());
   const [videoSnapshotStats, setVideoSnapshotStats] = useState<VideoSnapshotCacheStats>({ count: 0, totalBytes: 0 });
   const [playbackProgressStats, setPlaybackProgressStats] = useState<PlaybackProgressStats>({ count: 0, totalBytes: 0 });
-  const [quarkIDCacheStats, setQuarkIDCacheStats] = useState<QuarkIDCacheStats>({ count: 0 });
-  const [providerBrowseStats, setProviderBrowseStats] = useState<Record<CloudProvider, ProviderBrowseStats>>({
-    "123": {
-      directoryCache: { count: 0, totalEntries: 0, totalBytes: 0 },
-      scrollPositions: 0,
-      backHistory: 0,
-      forwardHistory: 0,
-    },
-    quark: {
-      directoryCache: { count: 0, totalEntries: 0, totalBytes: 0 },
-      scrollPositions: 0,
-      backHistory: 0,
-      forwardHistory: 0,
-    },
-  });
-  const [webdavCacheCount, setWebDAVCacheCount] = useState(0);
-  const [quarkDownloadCacheCount, setQuarkDownloadCacheCount] = useState(0);
+  const [providerBrowseStats, setAccountBrowseStats] = useState<Record<WebDAVAccountID, AccountBrowseStats>>({});
   const [currentPath, setCurrentPath] = useState("/");
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const [loginProvider, setLoginProvider] = useState<CloudProvider | null>(null);
+  const [accountDialogOpen, setAccountDialogOpen] = useState(false);
+  const [editingAccount, setEditingAccount] = useState<WebDAVAccountState | null>(null);
+  const [accountPendingDelete, setAccountPendingDelete] = useState<WebDAVAccountState | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [activeVideo, setActiveVideo] = useState<ActiveVideo | null>(null);
   const [videoDialogOpen, setVideoDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -2127,9 +2051,6 @@ function App() {
     setError("");
   }, [error, showSettings]);
 
-  const [webdavCacheTTLInput, setWebDAVCacheTTLInput] = useState("30");
-  const [quarkDownloadCacheTTLInput, setQuarkDownloadCacheTTLInput] = useState("30");
-  const [quarkIDCacheTTLInput, setQuarkIDCacheTTLInput] = useState("30");
   const [directoryCacheTTLInput, setDirectoryCacheTTLInput] = useState(String(directoryCacheSettings.ttlMinutes));
   const [directoryCacheMaxSizeInput, setDirectoryCacheMaxSizeInput] = useState(String(directoryCacheSettings.maxSizeMB));
   const [videoMetadataMaxAgeInput, setVideoMetadataMaxAgeInput] = useState("30");
@@ -2150,23 +2071,22 @@ function App() {
   const videoMetadataAbortController = useRef<AbortController | null>(null);
   const directoryScrollViewportRef = useRef<HTMLDivElement | null>(null);
   const breadcrumbScrollRef = useRef<HTMLElement | null>(null);
-  const providerBrowseSessions = useRef<Record<CloudProvider, ProviderBrowseSession>>({
-    "123": createProviderBrowseSession(),
-    quark: createProviderBrowseSession(),
-  });
-  const activeBrowseProvider = useRef<CloudProvider>("123");
-  const directoryScrollPositions = useRef(providerBrowseSessions.current["123"].scrollPositions);
+  const initialBrowseSession = useRef(createAccountBrowseSession());
+  const accountBrowseSessions = useRef<Record<WebDAVAccountID, AccountBrowseSession>>({});
+  const activeBrowseAccountID = useRef<WebDAVAccountID>("");
+  const directoryScrollPositions = useRef(initialBrowseSession.current.scrollPositions);
   const pendingDirectoryScrollRestore = useRef<{ path: string; scrollTop: number } | null>(null);
   const currentPathRef = useRef("/");
-  const directoryBackHistory = useRef(providerBrowseSessions.current["123"].backHistory);
-  const directoryForwardHistory = useRef(providerBrowseSessions.current["123"].forwardHistory);
+  const directoryBackHistory = useRef(initialBrowseSession.current.backHistory);
+  const directoryForwardHistory = useRef(initialBrowseSession.current.forwardHistory);
   const videoMetadataReloadNeeded = useRef(false);
-  const directoryCache = useRef(providerBrowseSessions.current["123"].directoryCache);
+  const directoryCache = useRef(initialBrowseSession.current.directoryCache);
   const directoryCacheSettingsRef = useRef(directoryCacheSettings);
 
-  const pointBrowseRefsAtProvider = useCallback((provider: CloudProvider) => {
-    const session = providerBrowseSessions.current[provider];
-    activeBrowseProvider.current = provider;
+  const pointBrowseRefsAtAccount = useCallback((provider: WebDAVAccountID) => {
+    const session = accountBrowseSessions.current[provider] ?? createAccountBrowseSession();
+    accountBrowseSessions.current[provider] = session;
+    activeBrowseAccountID.current = provider;
     directoryCache.current = session.directoryCache;
     directoryScrollPositions.current = session.scrollPositions;
     directoryBackHistory.current = session.backHistory;
@@ -2174,27 +2094,21 @@ function App() {
     currentPathRef.current = session.currentPath;
   }, []);
 
-  const refreshProviderBrowseStats = useCallback((settings = directoryCacheSettingsRef.current) => {
-    const statsFor = (provider: CloudProvider): ProviderBrowseStats => {
-      const session = providerBrowseSessions.current[provider];
-      return {
+  const refreshAccountBrowseStats = useCallback((settings = directoryCacheSettingsRef.current) => {
+    const next: Record<WebDAVAccountID, AccountBrowseStats> = {};
+    for (const [provider, session] of Object.entries(accountBrowseSessions.current)) {
+      next[provider] = {
         directoryCache: pruneDirectoryCache(session.directoryCache, settings),
         scrollPositions: session.scrollPositions.size,
         backHistory: session.backHistory.length,
         forwardHistory: session.forwardHistory.length,
       };
-    };
-    setProviderBrowseStats({
-      "123": statsFor("123"),
-      quark: statsFor("quark"),
-    });
+    }
+    setAccountBrowseStats(next);
   }, []);
 
   const syncBackendState = useCallback((nextState: AppState) => {
     setState(nextState);
-    setWebDAVCacheTTLInput(String(nextState.webdavCacheTTLMinutes));
-    setQuarkDownloadCacheTTLInput(String(nextState.quarkDownloadCacheTTLMinutes));
-    setQuarkIDCacheTTLInput(String(nextState.quarkIDCacheTTLMinutes));
     setVideoMetadataMaxAgeInput(String(nextState.videoMetadataMaxAgeDays));
     setVideoMetadataMaxSizeInput(String(nextState.videoMetadataMaxSizeMB));
     setVideoMetadataThumbnailOffsetPercentInput(String(nextState.videoMetadataThumbnailOffsetPercent));
@@ -2209,50 +2123,15 @@ function App() {
 
   useEffect(() => {
     AppService.GetState()
-      .then(async (nextState) => {
+      .then((nextState) => {
         syncBackendState(nextState);
-
-        const preferredProvider = nextState.provider;
-        let restoredState = nextState;
-        const restoreErrors: string[] = [];
-
-        if (!restoredState.connected123 && nextState.username && nextState.password) {
-          try {
-            restoredState = await AppService.Login(nextState.username, nextState.password);
-            syncBackendState(restoredState);
-          } catch (err) {
-            restoreErrors.push(`123 云盘自动登录失败：${errorMessage(err)}`);
-          }
-        }
-        if (!restoredState.connectedQuark && nextState.quarkCookie) {
-          try {
-            restoredState = await AppService.LoginQuark(nextState.quarkCookie);
-            syncBackendState(restoredState);
-          } catch (err) {
-            restoreErrors.push(`夸克网盘自动登录失败：${errorMessage(err)}`);
-          }
-        }
-
-        const preferredConnected =
-          preferredProvider === "quark" ? restoredState.connectedQuark : restoredState.connected123;
-        if (preferredConnected && restoredState.provider !== preferredProvider) {
-          try {
-            restoredState = await AppService.SwitchProvider(preferredProvider);
-            syncBackendState(restoredState);
-          } catch (err) {
-            restoreErrors.push(`恢复当前网盘失败：${errorMessage(err)}`);
-          }
-        }
-
-        pointBrowseRefsAtProvider(normalizeProvider(restoredState.provider));
-
-        if (restoreErrors.length > 0) {
-          setError(restoreErrors.join("；"));
+        if (nextState.activeAccountId) {
+          pointBrowseRefsAtAccount(nextState.activeAccountId);
         }
       })
       .catch((err) => setError(errorMessage(err)))
       .finally(() => setRestoringSession(false));
-  }, [pointBrowseRefsAtProvider, syncBackendState]);
+  }, [pointBrowseRefsAtAccount, syncBackendState]);
 
   useEffect(
     () => () => {
@@ -2573,27 +2452,30 @@ function App() {
   }, [loadDirectory, syncDirectoryHistoryState]);
 
   const saveActiveBrowseSession = useCallback(() => {
+    const provider = activeBrowseAccountID.current;
+    if (!provider) return;
+    const session = accountBrowseSessions.current[provider];
+    if (!session) return;
     const viewport = directoryScrollViewportRef.current;
     if (viewport) {
       rememberDirectoryScrollPosition(currentPathRef.current, viewport.scrollTop);
     }
-    const session = providerBrowseSessions.current[activeBrowseProvider.current];
     session.currentPath = currentPathRef.current;
     session.entries = entries.slice();
     session.thumbnailImages = { ...thumbnailImages };
     session.videoMetadataByPath = { ...videoMetadataByPath };
   }, [entries, rememberDirectoryScrollPosition, thumbnailImages, videoMetadataByPath]);
 
-  const resetProviderBrowseSession = useCallback((provider: CloudProvider) => {
-    providerBrowseSessions.current[provider] = createProviderBrowseSession();
-    if (activeBrowseProvider.current === provider) {
-      pointBrowseRefsAtProvider(provider);
+  const resetAccountBrowseSession = useCallback((provider: WebDAVAccountID) => {
+    accountBrowseSessions.current[provider] = createAccountBrowseSession();
+    if (activeBrowseAccountID.current === provider) {
+      pointBrowseRefsAtAccount(provider);
     }
-  }, [pointBrowseRefsAtProvider]);
+  }, [pointBrowseRefsAtAccount]);
 
-  const restoreProviderBrowseSession = useCallback((provider: CloudProvider) => {
-    pointBrowseRefsAtProvider(provider);
-    const session = providerBrowseSessions.current[provider];
+  const restoreAccountBrowseSession = useCallback((provider: WebDAVAccountID) => {
+    pointBrowseRefsAtAccount(provider);
+    const session = accountBrowseSessions.current[provider];
     setCurrentPath(session.currentPath);
     syncDirectoryHistoryState();
 
@@ -2621,7 +2503,7 @@ function App() {
     setLoading(false);
     const requestId = ++directoryRequestId.current;
     startThumbnailLoading(visibleEntries, requestId);
-  }, [getCachedDirectory, getDirectoryScrollPosition, loadDirectory, pointBrowseRefsAtProvider, startThumbnailLoading, syncDirectoryHistoryState]);
+  }, [getCachedDirectory, getDirectoryScrollPosition, loadDirectory, pointBrowseRefsAtAccount, startThumbnailLoading, syncDirectoryHistoryState]);
 
   useEffect(() => {
     const handleHistoryMouseButton = (event: MouseEvent) => {
@@ -2647,22 +2529,9 @@ function App() {
     if (!restoringSession && state?.connected) {
       void loadDirectory(currentPath);
     }
-    // Wait for both saved sessions to restore before the initial directory load.
+    // Wait for the saved active account to restore before the initial directory load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restoringSession]);
-
-  const refreshProviderCaches = useCallback(async () => {
-    try {
-      const [webdavEntries, quarkEntries] = await Promise.all([
-        AppService.ListRedirectCache("123"),
-        AppService.ListRedirectCache("quark"),
-      ]);
-      setWebDAVCacheCount((webdavEntries ?? []).length);
-      setQuarkDownloadCacheCount((quarkEntries ?? []).length);
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  }, []);
 
   const refreshVideoMetadataStats = useCallback(async () => {
     try {
@@ -2688,98 +2557,114 @@ function App() {
     }
   }, []);
 
-  const refreshQuarkIDCacheStats = useCallback(async () => {
-    try {
-      setQuarkIDCacheStats(await AppService.GetQuarkIDCacheStats());
-    } catch (err) {
-      setError(errorMessage(err));
-    }
+  const cancelAccountRequests = useCallback((reason: string) => {
+    directoryRequest.current?.cancel(reason);
+    directoryAbortController.current?.abort();
+    videoMetadataAbortController.current?.abort();
   }, []);
 
-  const completeLogin = (nextState: AppState, provider: CloudProvider) => {
-    directoryRequest.current?.cancel("provider login");
-    directoryAbortController.current?.abort();
-    videoMetadataAbortController.current?.abort();
-    resetProviderBrowseSession(provider);
-    syncBackendState(nextState);
-    setQuarkIDCacheStats({ count: 0 });
-    setShowSettings(false);
-    setLoginProvider(null);
-    setError("");
-    restoreProviderBrowseSession(provider);
-    void refreshProviderCaches();
-    if (provider === "quark") void refreshQuarkIDCacheStats();
-  };
-
-  const login123 = async (username: string, password: string) => {
-    saveActiveBrowseSession();
-    completeLogin(await AppService.Login(username, password), "123");
-  };
-
-  const loginQuark = async (cookie: string) => {
-    saveActiveBrowseSession();
-    completeLogin(await AppService.LoginQuark(cookie), "quark");
-  };
-
-  const switchProvider = async (provider: CloudProvider) => {
-    if (!state || state.provider === provider) return;
-    const connected = provider === "quark" ? state.connectedQuark : state.connected123;
-    if (!connected) {
-      setLoginProvider(provider);
-      return;
-    }
-
-    saveActiveBrowseSession();
-    directoryRequest.current?.cancel("provider switched");
-    directoryAbortController.current?.abort();
-    videoMetadataAbortController.current?.abort();
-    const nextState = await AppService.SwitchProvider(provider);
-    syncBackendState(nextState);
-    restoreProviderBrowseSession(provider);
-    setShowSettings(false);
-    setError("");
-    void refreshProviderCaches();
-    if (provider === "quark") {
-      void refreshQuarkIDCacheStats();
-    } else {
-      setQuarkIDCacheStats({ count: 0 });
-    }
-  };
-
-  const logout = async () => {
-    const loggedOutProvider = state ? normalizeProvider(state.provider) : activeBrowseProvider.current;
-    directoryRequest.current?.cancel("provider logout");
-    directoryAbortController.current?.abort();
-    videoMetadataAbortController.current?.abort();
-    const nextState = await AppService.Logout();
-    resetProviderBrowseSession(loggedOutProvider);
-    syncBackendState(nextState);
+  const addWebDAVAccount = async (input: WebDAVAccountInput) => {
+    if (activeBrowseAccountID.current) saveActiveBrowseSession();
+    const nextState = await AppService.AddWebDAVAccount(input.name, input.endpoint, input.username, input.password);
+    cancelAccountRequests("account added");
     setVideoDialogOpen(false);
     setActiveVideo(null);
+    syncBackendState(nextState);
+    const accountID = nextState.activeAccountId;
+    if (accountID) {
+      resetAccountBrowseSession(accountID);
+      restoreAccountBrowseSession(accountID);
+    }
     setError("");
+    refreshAccountBrowseStats();
+  };
 
-    if (nextState.connected) {
-      const nextProvider = normalizeProvider(nextState.provider);
-      restoreProviderBrowseSession(nextProvider);
-      void refreshProviderCaches();
-      if (nextProvider === "quark") {
-        void refreshQuarkIDCacheStats();
-      } else {
-        setQuarkIDCacheStats({ count: 0 });
-      }
+  const saveWebDAVAccount = async (input: WebDAVAccountInput) => {
+    if (!editingAccount) {
+      await addWebDAVAccount(input);
       return;
     }
+    const editingActive = state?.activeAccountId === editingAccount.id;
+    if (editingActive) saveActiveBrowseSession();
+    const nextState = await AppService.UpdateWebDAVAccount(
+      editingAccount.id,
+      input.name,
+      input.endpoint,
+      input.username,
+      input.password,
+    );
+    if (editingActive) {
+      cancelAccountRequests("account updated");
+      setVideoDialogOpen(false);
+      setActiveVideo(null);
+    }
+    resetAccountBrowseSession(editingAccount.id);
+    syncBackendState(nextState);
+    if (editingActive && nextState.activeAccountId === editingAccount.id) {
+      restoreAccountBrowseSession(editingAccount.id);
+    }
+    setError("");
+    refreshAccountBrowseStats();
+  };
 
-    pointBrowseRefsAtProvider(loggedOutProvider);
-    setEntries([]);
-    setThumbnailImages({});
-    setVideoMetadataByPath({});
-    setCurrentPath("/");
-    syncDirectoryHistoryState();
-    refreshProviderBrowseStats();
-    setWebDAVCacheCount(0);
-    setQuarkDownloadCacheCount(0);
-    setQuarkIDCacheStats({ count: 0 });
+  const switchWebDAVAccount = async (provider: WebDAVAccountID) => {
+    if (!state || state.activeAccountId === provider) return;
+
+    saveActiveBrowseSession();
+    try {
+      const nextState = await AppService.SwitchWebDAVAccount(provider);
+      cancelAccountRequests("account switched");
+      setVideoDialogOpen(false);
+      setActiveVideo(null);
+      syncBackendState(nextState);
+      restoreAccountBrowseSession(provider);
+      setError("");
+      refreshAccountBrowseStats();
+    } catch (err) {
+      toast.add({ title: "切换失败", description: errorMessage(err), type: "error" });
+    }
+  };
+
+  const removeWebDAVAccount = async (account: WebDAVAccountState) => {
+    const removingActive = state?.activeAccountId === account.id;
+    if (removingActive) {
+      saveActiveBrowseSession();
+    }
+    let nextState: AppState;
+    try {
+      nextState = await AppService.RemoveWebDAVAccount(account.id);
+    } catch (err) {
+      toast.add({ title: "删除失败", description: errorMessage(err), type: "error" });
+      return;
+    }
+    if (removingActive) {
+      cancelAccountRequests("account removed");
+      setVideoDialogOpen(false);
+      setActiveVideo(null);
+    }
+    delete accountBrowseSessions.current[account.id];
+    syncBackendState(nextState);
+    setError("");
+    if (nextState.connected) {
+      if (removingActive && nextState.activeAccountId) {
+        restoreAccountBrowseSession(nextState.activeAccountId);
+      }
+    } else {
+      const emptySession = createAccountBrowseSession();
+      initialBrowseSession.current = emptySession;
+      activeBrowseAccountID.current = "";
+      directoryCache.current = emptySession.directoryCache;
+      directoryScrollPositions.current = emptySession.scrollPositions;
+      directoryBackHistory.current = emptySession.backHistory;
+      directoryForwardHistory.current = emptySession.forwardHistory;
+      currentPathRef.current = "/";
+      setEntries([]);
+      setThumbnailImages({});
+      setVideoMetadataByPath({});
+      setCurrentPath("/");
+      syncDirectoryHistoryState();
+    }
+    refreshAccountBrowseStats();
   };
 
   const activateVideoEntry = async (entry: FileEntry) => {
@@ -2795,7 +2680,6 @@ function App() {
       resumePosition: progress?.found ? progress.position : 0,
     });
     setVideoDialogOpen(true);
-    window.setTimeout(() => void refreshProviderCaches(), 600);
   };
 
   const openEntry = async (entry: FileEntry) => {
@@ -2829,72 +2713,6 @@ function App() {
       // Progress persistence must never interrupt playback or closing the player.
     });
   }, []);
-
-  const saveWebDAVCacheTTL = async () => {
-    const minutes = Number.parseInt(webdavCacheTTLInput, 10);
-    if (!Number.isFinite(minutes)) {
-      toast.add({ title: "设置无效", description: "请输入有效的 123 URL 缓存分钟数", type: "error" });
-      return;
-    }
-    try {
-      const nextState = await AppService.SetWebDAVCacheTTL(minutes);
-      syncBackendState(nextState);
-      await refreshProviderCaches();
-    } catch (err) {
-      toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
-    }
-  };
-
-  const saveQuarkDownloadCacheTTL = async () => {
-    const minutes = Number.parseInt(quarkDownloadCacheTTLInput, 10);
-    if (!Number.isFinite(minutes)) {
-      toast.add({ title: "设置无效", description: "请输入有效的夸克下载 URL 缓存分钟数", type: "error" });
-      return;
-    }
-    try {
-      const nextState = await AppService.SetQuarkDownloadCacheTTL(minutes);
-      syncBackendState(nextState);
-      await refreshProviderCaches();
-    } catch (err) {
-      toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
-    }
-  };
-
-  const clearProviderCache = async (provider: CloudProvider) => {
-    try {
-      await AppService.ClearRedirectCache(provider);
-      if (provider === "quark") {
-        setQuarkDownloadCacheCount(0);
-      } else {
-        setWebDAVCacheCount(0);
-      }
-    } catch (err) {
-      toast.add({ title: "清空失败", description: errorMessage(err), type: "error" });
-    }
-  };
-
-  const saveQuarkIDCacheTTL = async () => {
-    const minutes = Number.parseInt(quarkIDCacheTTLInput, 10);
-    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
-      toast.add({ title: "设置无效", description: "路径 ID 缓存时间必须在 1 到 1440 分钟之间", type: "error" });
-      return;
-    }
-    try {
-      const nextState = await AppService.SetQuarkIDCacheTTL(minutes);
-      syncBackendState(nextState);
-      await refreshQuarkIDCacheStats();
-    } catch (err) {
-      toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
-    }
-  };
-
-  const clearQuarkIDCache = async () => {
-    try {
-      setQuarkIDCacheStats(await AppService.ClearQuarkIDCache());
-    } catch (err) {
-      toast.add({ title: "清空失败", description: errorMessage(err), type: "error" });
-    }
-  };
 
   const saveDirectoryCacheSettings = () => {
     const ttlMinutes = Number.parseInt(directoryCacheTTLInput, 10);
@@ -2933,12 +2751,12 @@ function App() {
     } catch {
       // The active in-memory settings still apply even when persistence is unavailable.
     }
-    refreshProviderBrowseStats(nextSettings);
+    refreshAccountBrowseStats(nextSettings);
   };
 
-  const clearDirectoryCache = (provider: CloudProvider) => {
-    providerBrowseSessions.current[provider].directoryCache.clear();
-    refreshProviderBrowseStats();
+  const clearDirectoryCache = (provider: WebDAVAccountID) => {
+    accountBrowseSessions.current[provider]?.directoryCache.clear();
+    refreshAccountBrowseStats();
   };
 
   const saveVideoMetadataSettings = async () => {
@@ -3098,8 +2916,8 @@ function App() {
       __drivePlayerExitFullscreen?: () => boolean;
     };
     backWindow.__drivePlayerHandleBack = () => {
-      if (showLogoutConfirm) {
-        setShowLogoutConfirm(false);
+      if (deleteDialogOpen) {
+        setDeleteDialogOpen(false);
         return true;
       }
       if (videoDialogOpen && backWindow.__drivePlayerExitFullscreen?.()) return true;
@@ -3107,8 +2925,8 @@ function App() {
         closeVideo();
         return true;
       }
-      if (loginProvider) {
-        setLoginProvider(null);
+      if (accountDialogOpen) {
+        setAccountDialogOpen(false);
         return true;
       }
       if (showSettings) {
@@ -3125,7 +2943,7 @@ function App() {
     return () => {
       delete backWindow.__drivePlayerHandleBack;
     };
-  }, [closeSettings, goParentDirectory, isAndroid, loginProvider, showLogoutConfirm, showSettings, videoDialogOpen]);
+  }, [accountDialogOpen, closeSettings, deleteDialogOpen, goParentDirectory, isAndroid, showSettings, videoDialogOpen]);
 
   const pathParts = useMemo(() => breadcrumbs(currentPath), [currentPath]);
   const visibleEntries = useMemo(
@@ -3142,12 +2960,13 @@ function App() {
     );
   }
 
+  const accounts = state.accounts ?? [];
+  const activeAccount = accounts.find((account) => account.id === state.activeAccountId) ?? null;
+
   if (!state.connected) {
     return (
-      <LoginView
-        state={state}
-        onLogin123={login123}
-        onLoginQuark={loginQuark}
+      <EmptyAccountView
+        onAdd={addWebDAVAccount}
         initialError={error}
       />
     );
@@ -3156,12 +2975,6 @@ function App() {
   const directoryCacheSettingsChanged =
     Number.parseInt(directoryCacheTTLInput, 10) !== directoryCacheSettings.ttlMinutes ||
     Number.parseInt(directoryCacheMaxSizeInput, 10) !== directoryCacheSettings.maxSizeMB;
-  const webdavCacheSettingsChanged =
-    Number.parseInt(webdavCacheTTLInput, 10) !== state.webdavCacheTTLMinutes;
-  const quarkDownloadCacheSettingsChanged =
-    Number.parseInt(quarkDownloadCacheTTLInput, 10) !== state.quarkDownloadCacheTTLMinutes;
-  const quarkIDCacheSettingsChanged =
-    Number.parseInt(quarkIDCacheTTLInput, 10) !== state.quarkIDCacheTTLMinutes;
   const videoMetadataSettingsChanged =
     Number.parseInt(videoMetadataMaxAgeInput, 10) !== state.videoMetadataMaxAgeDays ||
     Number.parseInt(videoMetadataMaxSizeInput, 10) !== state.videoMetadataMaxSizeMB ||
@@ -3180,61 +2993,42 @@ function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <div className="flex w-full min-w-0 items-center gap-3 sm:w-auto">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <HardDrive className="size-5" />
           </div>
-          <div className="min-w-0">
-            <div className="truncate font-semibold">Drive Player</div>
-            <div className="truncate text-xs text-muted-foreground">
-              {state.provider === "quark" ? "夸克网盘 · Cookie 登录" : `123 云盘 · ${state.username}`}
-            </div>
-          </div>
+          <div className="truncate font-semibold">Drive Player</div>
         </div>
-        <div className="grid w-full grid-cols-4 items-center gap-2 sm:flex sm:w-auto">
-          <Tabs
-            className="col-span-2 gap-0 sm:w-auto"
-            value={state.provider}
-            onValueChange={(provider) => {
-              if (provider === "123" || provider === "quark") {
-                void switchProvider(provider);
-              }
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <Select
+            value={state.activeAccountId}
+            onValueChange={(value) => {
+              if (value) void switchWebDAVAccount(value);
             }}
           >
-            <TabsList className="grid w-full grid-cols-2 sm:w-auto" aria-label="网盘切换">
-              <TabsTrigger className="min-w-0 px-2 text-xs sm:px-2.5 sm:text-sm" value="123">
-                {state.connected123 ? "123 云盘" : "登录 123"}
-              </TabsTrigger>
-              <TabsTrigger className="min-w-0 px-2 text-xs sm:px-2.5 sm:text-sm" value="quark">
-                {state.connectedQuark ? "夸克网盘" : "登录夸克"}
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
+            <SelectTrigger size="default" className="w-40" aria-label="网盘切换">
+              <SelectValue>{activeAccount?.name}</SelectValue>
+            </SelectTrigger>
+            <SelectContent align="start">
+              {accounts.map((account) => (
+                <SelectItem key={account.id} value={account.id}>{account.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button
-            className="min-w-0 px-2 text-xs sm:px-2.5 sm:text-sm"
+            className="px-2 text-xs sm:px-2.5 sm:text-sm"
             variant="outline"
             size="sm"
             onClick={() => {
               setShowSettings(true);
-              void refreshProviderCaches();
-              refreshProviderBrowseStats();
+              refreshAccountBrowseStats();
               void refreshVideoMetadataStats();
               void refreshVideoSnapshotStats();
               void refreshPlaybackProgressStats();
-              void refreshQuarkIDCacheStats();
             }}
           >
             <Settings />
             设置
-          </Button>
-          <Button
-            className="min-w-0 px-2 text-xs sm:px-2.5 sm:text-sm"
-            variant="outline"
-            size="sm"
-            onClick={() => setShowLogoutConfirm(true)}
-          >
-            <LogOut />
-            退出当前
           </Button>
         </div>
       </header>
@@ -3463,29 +3257,34 @@ function App() {
         </div>
       </main>
 
-      <AlertDialog open={showLogoutConfirm} onOpenChange={setShowLogoutConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              退出{state.provider === "quark" ? "夸克网盘" : "123 云盘"}？
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              将退出当前账号并清除该网盘的本次浏览状态。另一个已登录网盘不会受影响。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction
+      <Dialog
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        onOpenChangeComplete={(open) => {
+          if (!open) setAccountPendingDelete(null);
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>删除 {accountPendingDelete?.name}？</DialogTitle>
+            <DialogDescription>将删除这个 WebDAV 配置和本次浏览状态。</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+              取消
+            </Button>
+            <Button
               onClick={() => {
-                setShowLogoutConfirm(false);
-                void logout();
+                const account = accountPendingDelete;
+                setDeleteDialogOpen(false);
+                if (account) void removeWebDAVAccount(account);
               }}
             >
-              退出
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+              删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={showSettings}
@@ -3504,10 +3303,96 @@ function App() {
             <div className="mx-auto grid w-full max-w-3xl gap-3 p-3 sm:gap-4 sm:p-6">
               <Card>
                 <CardHeader>
-                  <CardTitle>浏览缓存规则</CardTitle>
-                  <CardDescription>
-                    123 和夸克各自独立保存文件列表、滚动位置和前进 / 后退历史；以下限制同时应用于两个网盘。
-                  </CardDescription>
+                  <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center sm:gap-4">
+                    <div className="space-y-1.5">
+                      <CardTitle>WebDAV 网盘</CardTitle>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setEditingAccount(null);
+                        setAccountDialogOpen(true);
+                      }}
+                    >
+                      <Plus />
+                      添加 WebDAV
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {accounts.map((account) => {
+                    const stats = providerBrowseStats[account.id] ?? {
+                      directoryCache: { count: 0, totalEntries: 0, totalBytes: 0 },
+                      scrollPositions: 0,
+                      backHistory: 0,
+                      forwardHistory: 0,
+                    };
+                    return (
+                      <div key={account.id} className="space-y-4 rounded-lg border p-3 sm:p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="font-medium">{account.name}</div>
+                              {account.id === state.activeAccountId && <Badge variant="secondary">当前</Badge>}
+                            </div>
+                            <div className="break-all text-xs text-muted-foreground">{account.endpoint}</div>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setEditingAccount(account);
+                                setAccountDialogOpen(true);
+                              }}
+                            >
+                              <Pencil />
+                              编辑
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setAccountPendingDelete(account);
+                                setDeleteDialogOpen(true);
+                              }}
+                            >
+                              <Trash2 />
+                              删除
+                            </Button>
+                          </div>
+                        </div>
+                        {account.username && (
+                          <div className="flex justify-end text-sm">
+                            <div className="grid justify-items-end gap-1 text-right">
+                              <span className="text-muted-foreground">账号</span>
+                              <code className="break-all rounded bg-muted px-2 py-1">{account.username}</code>
+                            </div>
+                          </div>
+                        )}
+                        <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+                          <Badge variant="outline">
+                            文件列表 {stats.directoryCache.totalBytes === 0 ? "0 B" : formatSize(stats.directoryCache.totalBytes)} / {directoryCacheSettings.maxSizeMB} MB
+                          </Badge>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => clearDirectoryCache(account.id)}
+                            disabled={stats.directoryCache.count === 0}
+                          >
+                            <Trash2 />
+                            清空列表缓存
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>浏览缓存</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -3554,247 +3439,7 @@ function App() {
 
               <Card>
                 <CardHeader>
-                  <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:gap-4">
-                    <div className="space-y-1.5">
-                      <CardTitle>123 云盘</CardTitle>
-                      <CardDescription>123 的浏览状态、WebDAV 连接与 GET 302 Location 缓存。</CardDescription>
-                    </div>
-                    <Badge variant={state.connected123 ? "secondary" : "outline"}>
-                      {state.connected123 ? "已登录" : "未登录"}
-                    </Badge>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-5">
-                  <div className="space-y-3">
-                    <div className="font-medium">浏览状态</div>
-                    <div className="grid gap-3 text-sm">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-muted-foreground">文件列表</span>
-                          <Badge variant="outline">
-                            {providerBrowseStats["123"].directoryCache.totalBytes === 0
-                              ? "0 B"
-                              : formatSize(providerBrowseStats["123"].directoryCache.totalBytes)} / {directoryCacheSettings.maxSizeMB} MB
-                          </Badge>
-                          <Badge variant="outline">{providerBrowseStats["123"].directoryCache.count} 个目录</Badge>
-                          <Badge variant="outline">{providerBrowseStats["123"].directoryCache.totalEntries} 个条目</Badge>
-                        </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => clearDirectoryCache("123")}
-                          disabled={providerBrowseStats["123"].directoryCache.count === 0}
-                        >
-                          <Trash2 />
-                          清空列表缓存
-                        </Button>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Badge variant="outline">
-                          滚动位置 {providerBrowseStats["123"].scrollPositions} / {DIRECTORY_SCROLL_POSITION_CACHE_LIMIT}
-                        </Badge>
-                        <Badge variant="outline">
-                          后退 {providerBrowseStats["123"].backHistory} / {DIRECTORY_HISTORY_LIMIT}
-                        </Badge>
-                        <Badge variant="outline">
-                          前进 {providerBrowseStats["123"].forwardHistory} / {DIRECTORY_HISTORY_LIMIT}
-                        </Badge>
-                      </div>
-                    </div>
-                  </div>
-                  <Separator />
-                  <div className="grid gap-4 text-sm sm:grid-cols-2">
-                    <div className="grid gap-1">
-                      <span className="text-muted-foreground">WebDAV</span>
-                      <code className="break-all rounded bg-muted px-2 py-1">{state.endpoint}</code>
-                    </div>
-                    <div className="grid gap-1">
-                      <span className="text-muted-foreground">本地代理</span>
-                      <code className="break-all rounded bg-muted px-2 py-1">{state.webdavProxyBaseUrl}</code>
-                    </div>
-                  </div>
-                  <div className="grid max-w-sm gap-2">
-                    <Label htmlFor="webdav-cache-ttl">URL 缓存时间（分钟）</Label>
-                    <Input
-                      id="webdav-cache-ttl"
-                      type="number"
-                      min={1}
-                      max={1440}
-                      value={webdavCacheTTLInput}
-                      onChange={(event) => setWebDAVCacheTTLInput(event.target.value)}
-                    />
-                  </div>
-                  <Button onClick={() => void saveWebDAVCacheTTL()} disabled={!webdavCacheSettingsChanged}>
-                    保存
-                  </Button>
-                  <Separator />
-                  <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div className="flex flex-wrap items-center gap-2 text-sm">
-                      <span className="text-muted-foreground">302 URL 缓存</span>
-                      <Badge variant="outline">{webdavCacheCount} 条</Badge>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void clearProviderCache("123")}
-                      disabled={webdavCacheCount === 0}
-                    >
-                      <Trash2 />
-                      清空缓存
-                    </Button>
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    GET：缓存并复用 302 Location；其他 WebDAV 方法直接透传。
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:gap-4">
-                    <div className="space-y-1.5">
-                      <CardTitle>夸克网盘</CardTitle>
-                      <CardDescription>夸克的浏览状态、下载 URL / Cookie、文件大小以及路径 FID 缓存。</CardDescription>
-                    </div>
-                    <Badge variant={state.connectedQuark ? "secondary" : "outline"}>
-                      {state.connectedQuark ? "已登录" : "未登录"}
-                    </Badge>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-5">
-                  <div className="space-y-3">
-                    <div className="font-medium">浏览状态</div>
-                    <div className="grid gap-3 text-sm">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-muted-foreground">文件列表</span>
-                          <Badge variant="outline">
-                            {providerBrowseStats.quark.directoryCache.totalBytes === 0
-                              ? "0 B"
-                              : formatSize(providerBrowseStats.quark.directoryCache.totalBytes)} / {directoryCacheSettings.maxSizeMB} MB
-                          </Badge>
-                          <Badge variant="outline">{providerBrowseStats.quark.directoryCache.count} 个目录</Badge>
-                          <Badge variant="outline">{providerBrowseStats.quark.directoryCache.totalEntries} 个条目</Badge>
-                        </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => clearDirectoryCache("quark")}
-                          disabled={providerBrowseStats.quark.directoryCache.count === 0}
-                        >
-                          <Trash2 />
-                          清空列表缓存
-                        </Button>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Badge variant="outline">
-                          滚动位置 {providerBrowseStats.quark.scrollPositions} / {DIRECTORY_SCROLL_POSITION_CACHE_LIMIT}
-                        </Badge>
-                        <Badge variant="outline">
-                          后退 {providerBrowseStats.quark.backHistory} / {DIRECTORY_HISTORY_LIMIT}
-                        </Badge>
-                        <Badge variant="outline">
-                          前进 {providerBrowseStats.quark.forwardHistory} / {DIRECTORY_HISTORY_LIMIT}
-                        </Badge>
-                      </div>
-                    </div>
-                  </div>
-                  <Separator />
-                  <div className="grid gap-4 text-sm sm:grid-cols-2">
-                    <div className="grid gap-1">
-                      <span className="text-muted-foreground">夸克 API</span>
-                      <code className="break-all rounded bg-muted px-2 py-1">{state.quarkEndpoint}</code>
-                    </div>
-                    <div className="grid gap-1">
-                      <span className="text-muted-foreground">本地代理</span>
-                      <code className="break-all rounded bg-muted px-2 py-1">{state.quarkProxyBaseUrl}</code>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    <div>
-                      <div className="font-medium">下载 URL 缓存</div>
-                      <div className="text-sm text-muted-foreground">
-                        缓存路径对应的临时下载 URL、本次下载 Cookie 和文件大小；失效后自动重新获取。
-                      </div>
-                    </div>
-                    <div className="grid max-w-sm gap-2">
-                      <Label htmlFor="quark-download-cache-ttl">缓存时间（分钟）</Label>
-                      <Input
-                        id="quark-download-cache-ttl"
-                        type="number"
-                        min={1}
-                        max={1440}
-                        value={quarkDownloadCacheTTLInput}
-                        onChange={(event) => setQuarkDownloadCacheTTLInput(event.target.value)}
-                      />
-                    </div>
-                    <Button onClick={() => void saveQuarkDownloadCacheTTL()} disabled={!quarkDownloadCacheSettingsChanged}>
-                      保存
-                    </Button>
-                    <div className="flex flex-wrap items-center justify-between gap-4">
-                      <Badge variant="outline">{quarkDownloadCacheCount} 条</Badge>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => void clearProviderCache("quark")}
-                        disabled={quarkDownloadCacheCount === 0}
-                      >
-                        <Trash2 />
-                        清空下载 URL 缓存
-                      </Button>
-                    </div>
-                  </div>
-
-                  <Separator />
-
-                  <div className="space-y-3">
-                    <div>
-                      <div className="font-medium">路径 ID 缓存</div>
-                      <div className="text-sm text-muted-foreground">
-                        后端内存缓存路径到 FID 的映射，避免每次访问都从根目录逐级解析。
-                      </div>
-                    </div>
-                    <div className="grid max-w-sm gap-2">
-                      <Label htmlFor="quark-id-cache-ttl">缓存时间（分钟）</Label>
-                      <Input
-                        id="quark-id-cache-ttl"
-                        type="number"
-                        min={1}
-                        max={1440}
-                        value={quarkIDCacheTTLInput}
-                        onChange={(event) => setQuarkIDCacheTTLInput(event.target.value)}
-                      />
-                    </div>
-                    <Button onClick={() => void saveQuarkIDCacheTTL()} disabled={!quarkIDCacheSettingsChanged}>
-                      保存
-                    </Button>
-                    <div className="flex flex-wrap items-center justify-between gap-4">
-                      <Badge variant="outline">{quarkIDCacheStats.count} 条</Badge>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => void clearQuarkIDCache()}
-                        disabled={quarkIDCacheStats.count === 0}
-                      >
-                        <Trash2 />
-                        清空路径 ID 缓存
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="text-sm text-muted-foreground">
-                    GET：请求长度 ≤300 MiB 时单次访问上游；更大时拆成多个 ≤300 MiB Range 顺序拼流。
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>视频元信息</CardTitle>
-                  <CardDescription>
-                    为当前打开目录的视频生成并缓存缩略图、分辨率和帧率；三项完整后一次性展示，并按最近使用时间自动淘汰。
-                  </CardDescription>
+                  <CardTitle>视频元信息缓存</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid gap-4 sm:grid-cols-3">
@@ -3841,7 +3486,7 @@ function App() {
                   <Separator />
                   <div className="flex flex-wrap items-center justify-between gap-4">
                     <div className="flex flex-wrap items-center gap-2 text-sm">
-                      <span className="text-muted-foreground">空间占用</span>
+                      <span>空间占用</span>
                       <Badge variant="outline">
                         {videoMetadataStats.totalBytes === 0 ? "0 B" : formatSize(videoMetadataStats.totalBytes)} / {state.videoMetadataMaxSizeMB} MB
                       </Badge>
@@ -3863,9 +3508,6 @@ function App() {
               <Card>
                 <CardHeader>
                   <CardTitle>视频时间点截图</CardTitle>
-                  <CardDescription>
-                    播放器始终提供时间点截图侧栏，可手动提取最多 10 张原始分辨率 PNG 截图。截图按视频时长等分，点击截图可直接跳转到对应时间点。
-                  </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -3901,7 +3543,7 @@ function App() {
                   <Separator />
                   <div className="flex flex-wrap items-center justify-between gap-4">
                     <div className="flex flex-wrap items-center gap-2 text-sm">
-                      <span className="text-muted-foreground">空间占用</span>
+                      <span>空间占用</span>
                       <Badge variant="outline">
                         {videoSnapshotStats.totalBytes === 0 ? "0 B" : formatSize(videoSnapshotStats.totalBytes)} / {state.videoSnapshotMaxSizeMB} MB
                       </Badge>
@@ -3923,9 +3565,6 @@ function App() {
               <Card>
                 <CardHeader>
                   <CardTitle>播放进度</CardTitle>
-                  <CardDescription>
-                    按账号和视频路径持久化播放断点。播放中定期保存，暂停或关闭播放器时立即保存；接近播放完成时自动删除断点，下次从头播放。
-                  </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -3961,7 +3600,7 @@ function App() {
                   <Separator />
                   <div className="flex flex-wrap items-center justify-between gap-4">
                     <div className="flex flex-wrap items-center gap-2 text-sm">
-                      <span className="text-muted-foreground">空间占用</span>
+                      <span>空间占用</span>
                       <Badge variant="outline">
                         {playbackProgressStats.totalBytes === 0 ? "0 B" : formatSize(playbackProgressStats.totalBytes)} / {state.playbackMaxSizeMB} MB
                       </Badge>
@@ -3983,9 +3622,6 @@ function App() {
               <Card>
                 <CardHeader>
                   <CardTitle>移动端长按倍速</CardTitle>
-                  <CardDescription>
-                    在视频画面的非控件区域长按约 0.5 秒后临时切换到设定倍速，松手立即恢复长按前的播放速度。仅移动端生效。
-                  </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid max-w-xs gap-2">
@@ -4011,10 +3647,7 @@ function App() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>全屏顶部信息</CardTitle>
-                  <CardDescription>
-                    进入全屏后，左上角用一个标签显示时间和电量百分比，右上角显示当前播放进度。标签始终贴着顶部，左右偏移只调整距屏幕两侧的距离。
-                  </CardDescription>
+                  <CardTitle>全屏时间、电量和进度</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="flex w-full items-center justify-between gap-4">
@@ -4051,10 +3684,7 @@ function App() {
               <Card>
                 <CardHeader>
                   <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:gap-4">
-                    <div className="space-y-1.5">
-                      <CardTitle>本地存储</CardTitle>
-                      <CardDescription>应用配置、视频元信息、视频时间点截图和播放进度都保存在这个应用数据目录下。</CardDescription>
-                    </div>
+                    <CardTitle>本地存储</CardTitle>
                     {!isMobile && (
                       <Button variant="outline" size="sm" onClick={() => void openStorageDirectory()}>
                         <FolderOpen />
@@ -4092,13 +3722,11 @@ function App() {
         </DialogContent>
       </Dialog>
 
-      {loginProvider && (
-        <AccountLoginDialog
-          provider={loginProvider}
-          state={state}
-          onClose={() => setLoginProvider(null)}
-          onLogin123={login123}
-          onLoginQuark={loginQuark}
+      {accountDialogOpen && (
+        <WebDAVAccountDialog
+          account={editingAccount}
+          onClose={() => setAccountDialogOpen(false)}
+          onSave={saveWebDAVAccount}
         />
       )}
 
@@ -4114,6 +3742,14 @@ function App() {
           }
           if (!open) closeVideo();
         }}
+        onOpenChangeComplete={(open) => {
+          if (open) return;
+          const shouldResumeMetadata = activeVideo !== null;
+          setActiveVideo(null);
+          if (shouldResumeMetadata && !loading && entries.length > 0) {
+            startThumbnailLoading(entries, directoryRequestId.current);
+          }
+        }}
       >
         <DialogContent
           overlayClassName={isMobile
@@ -4122,13 +3758,6 @@ function App() {
           className={isAndroid
             ? "video-dialog-content video-dialog-content--mobile flex h-dvh w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none p-0 sm:max-w-none"
             : `video-dialog-content${isMobile ? " video-dialog-content--mobile" : ""} flex h-dvh w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none p-0 sm:h-[90vh] sm:w-[95vw] sm:max-w-[95vw] sm:rounded-xl`}
-          onAnimationEnd={(event) => {
-            if (event.target !== event.currentTarget || videoDialogOpen) return;
-            setActiveVideo(null);
-            if (!loading && entries.length > 0) {
-              startThumbnailLoading(entries, directoryRequestId.current);
-            }
-          }}
         >
           <DialogHeader className="border-b px-3 py-3 sm:px-5 sm:py-4">
             <DialogTitle className="truncate pr-8">{activeVideo?.name ?? "视频播放"}</DialogTitle>

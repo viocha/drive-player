@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -24,13 +25,10 @@ import (
 )
 
 const (
-	defaultWebDAVEndpoint                      = "https://webdav.123pan.cn/webdav"
-	defaultURLCacheTTL                         = 30
-	defaultQuarkIDCacheTTL                     = 30
-	defaultVideoMetadataMaxAgeDays             = 30
+	defaultVideoMetadataMaxAgeDays             = 365
 	defaultVideoMetadataMaxSizeMB              = 512
 	defaultVideoMetadataThumbnailOffsetPercent = 10
-	defaultVideoSnapshotMaxAgeDays             = 30
+	defaultVideoSnapshotMaxAgeDays             = 365
 	defaultVideoSnapshotMaxSizeMB              = 1024
 	defaultPlaybackMaxAgeDays                  = 365
 	defaultPlaybackMaxSizeMB                   = 16
@@ -55,43 +53,39 @@ const (
 	maxFullscreenHUDSideOffsetPX               = 200
 	minMobileLongPressRate                     = 1.0
 	maxMobileLongPressRate                     = 8.0
-	minQuarkIDCacheTTLMinutes                  = 1
-	maxQuarkIDCacheTTLMinutes                  = 1440
-	provider123                                = "123"
-	providerQuark                              = "quark"
 )
 
 type AppState struct {
-	Connected                           bool    `json:"connected"`
-	Connected123                        bool    `json:"connected123"`
-	ConnectedQuark                      bool    `json:"connectedQuark"`
-	Provider                            string  `json:"provider"`
-	Username                            string  `json:"username"`
-	Password                            string  `json:"password"`
-	QuarkCookie                         string  `json:"quarkCookie"`
-	Endpoint                            string  `json:"endpoint"`
-	QuarkEndpoint                       string  `json:"quarkEndpoint"`
-	WebDAVCacheTTLMinutes               int     `json:"webdavCacheTTLMinutes"`
-	QuarkDownloadCacheTTLMinutes        int     `json:"quarkDownloadCacheTTLMinutes"`
-	QuarkIDCacheTTLMinutes              int     `json:"quarkIDCacheTTLMinutes"`
-	VideoMetadataMaxAgeDays             int     `json:"videoMetadataMaxAgeDays"`
-	VideoMetadataMaxSizeMB              int     `json:"videoMetadataMaxSizeMB"`
-	VideoMetadataThumbnailOffsetPercent int     `json:"videoMetadataThumbnailOffsetPercent"`
-	VideoSnapshotMaxAgeDays             int     `json:"videoSnapshotMaxAgeDays"`
-	VideoSnapshotMaxSizeMB              int     `json:"videoSnapshotMaxSizeMB"`
-	PlaybackMaxAgeDays                  int     `json:"playbackMaxAgeDays"`
-	PlaybackMaxSizeMB                   int     `json:"playbackMaxSizeMB"`
-	FullscreenHUDEnabled                bool    `json:"fullscreenHudEnabled"`
-	FullscreenHUDSideOffsetPX           int     `json:"fullscreenHudSideOffsetPx"`
-	MobileLongPressRate                 float64 `json:"mobileLongPressRate"`
-	StorageDirectory                    string  `json:"storageDirectory"`
-	ConfigPath                          string  `json:"configPath"`
-	VideoMetadataDirectory              string  `json:"videoMetadataDirectory"`
-	VideoSnapshotDirectory              string  `json:"videoSnapshotDirectory"`
-	PlaybackProgressPath                string  `json:"playbackProgressPath"`
-	ProxyBaseURL                        string  `json:"proxyBaseUrl"`
-	WebDAVProxyBaseURL                  string  `json:"webdavProxyBaseUrl"`
-	QuarkProxyBaseURL                   string  `json:"quarkProxyBaseUrl"`
+	Connected                           bool                 `json:"connected"`
+	Accounts                            []WebDAVAccountState `json:"accounts"`
+	ActiveAccountID                     string               `json:"activeAccountId"`
+	VideoMetadataMaxAgeDays             int                  `json:"videoMetadataMaxAgeDays"`
+	VideoMetadataMaxSizeMB              int                  `json:"videoMetadataMaxSizeMB"`
+	VideoMetadataThumbnailOffsetPercent int                  `json:"videoMetadataThumbnailOffsetPercent"`
+	VideoSnapshotMaxAgeDays             int                  `json:"videoSnapshotMaxAgeDays"`
+	VideoSnapshotMaxSizeMB              int                  `json:"videoSnapshotMaxSizeMB"`
+	PlaybackMaxAgeDays                  int                  `json:"playbackMaxAgeDays"`
+	PlaybackMaxSizeMB                   int                  `json:"playbackMaxSizeMB"`
+	FullscreenHUDEnabled                bool                 `json:"fullscreenHudEnabled"`
+	FullscreenHUDSideOffsetPX           int                  `json:"fullscreenHudSideOffsetPx"`
+	MobileLongPressRate                 float64              `json:"mobileLongPressRate"`
+	StorageDirectory                    string               `json:"storageDirectory"`
+	ConfigPath                          string               `json:"configPath"`
+	VideoMetadataDirectory              string               `json:"videoMetadataDirectory"`
+	VideoSnapshotDirectory              string               `json:"videoSnapshotDirectory"`
+	PlaybackProgressPath                string               `json:"playbackProgressPath"`
+}
+
+type WebDAVAccount struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Endpoint string `json:"endpoint"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type WebDAVAccountState struct {
+	WebDAVAccount
 }
 
 type FileEntry struct {
@@ -104,41 +98,25 @@ type FileEntry struct {
 }
 
 type diskConfig struct {
-	WebDAVCacheTTLMinutes               int     `json:"webdavCacheTTLMinutes"`
-	QuarkDownloadCacheTTLMinutes        int     `json:"quarkDownloadCacheTTLMinutes"`
-	QuarkIDCacheTTLMinutes              int     `json:"quarkIDCacheTTLMinutes"`
-	VideoMetadataMaxAgeDays             int     `json:"videoMetadataMaxAgeDays"`
-	VideoMetadataMaxSizeMB              int     `json:"videoMetadataMaxSizeMB"`
-	VideoMetadataThumbnailOffsetPercent int     `json:"videoMetadataThumbnailOffsetPercent"`
-	VideoSnapshotMaxAgeDays             int     `json:"videoSnapshotMaxAgeDays"`
-	VideoSnapshotMaxSizeMB              int     `json:"videoSnapshotMaxSizeMB"`
-	PlaybackMaxAgeDays                  int     `json:"playbackMaxAgeDays"`
-	PlaybackMaxSizeMB                   int     `json:"playbackMaxSizeMB"`
-	FullscreenHUDEnabled                bool    `json:"fullscreenHudEnabled"`
-	FullscreenHUDSideOffsetPX           int     `json:"fullscreenHudSideOffsetPx"`
-	MobileLongPressRate                 float64 `json:"mobileLongPressRate"`
-	Username                            string  `json:"username"`
-	Password                            string  `json:"password"`
-	Provider                            string  `json:"provider"`
-	QuarkCookie                         string  `json:"quarkCookie"`
-}
-
-type credentials struct {
-	username string
-	password string
+	Accounts                            []WebDAVAccount `json:"accounts"`
+	ActiveAccountID                     string          `json:"activeAccountId"`
+	VideoMetadataMaxAgeDays             int             `json:"videoMetadataMaxAgeDays"`
+	VideoMetadataMaxSizeMB              int             `json:"videoMetadataMaxSizeMB"`
+	VideoMetadataThumbnailOffsetPercent int             `json:"videoMetadataThumbnailOffsetPercent"`
+	VideoSnapshotMaxAgeDays             int             `json:"videoSnapshotMaxAgeDays"`
+	VideoSnapshotMaxSizeMB              int             `json:"videoSnapshotMaxSizeMB"`
+	PlaybackMaxAgeDays                  int             `json:"playbackMaxAgeDays"`
+	PlaybackMaxSizeMB                   int             `json:"playbackMaxSizeMB"`
+	FullscreenHUDEnabled                bool            `json:"fullscreenHudEnabled"`
+	FullscreenHUDSideOffsetPX           int             `json:"fullscreenHudSideOffsetPx"`
+	MobileLongPressRate                 float64         `json:"mobileLongPressRate"`
 }
 
 type AppService struct {
 	mu             sync.RWMutex
-	credentials    credentials
-	provider       string
-	quarkCookie    string
-	connected123   bool
-	connectedQuark bool
 	config         diskConfig
 	configPath     string
 	proxy          *WebDAVProxy
-	quark          *QuarkDrive
 	videoMetadata  *VideoMetadataCache
 	videoSnapshots *VideoSnapshotCache
 	progress       *PlaybackProgressStore
@@ -152,9 +130,6 @@ func NewAppService() (*AppService, error) {
 	}
 
 	config := diskConfig{
-		WebDAVCacheTTLMinutes:               defaultURLCacheTTL,
-		QuarkDownloadCacheTTLMinutes:        defaultURLCacheTTL,
-		QuarkIDCacheTTLMinutes:              defaultQuarkIDCacheTTL,
 		VideoMetadataMaxAgeDays:             defaultVideoMetadataMaxAgeDays,
 		VideoMetadataMaxSizeMB:              defaultVideoMetadataMaxSizeMB,
 		VideoMetadataThumbnailOffsetPercent: defaultVideoMetadataThumbnailOffsetPercent,
@@ -165,19 +140,9 @@ func NewAppService() (*AppService, error) {
 		FullscreenHUDEnabled:                defaultFullscreenHUDEnabled,
 		FullscreenHUDSideOffsetPX:           defaultFullscreenHUDSideOffsetPX,
 		MobileLongPressRate:                 defaultMobileLongPressRate,
-		Provider:                            provider123,
 	}
 	if data, err := os.ReadFile(configPath); err == nil {
 		_ = json.Unmarshal(data, &config)
-	}
-	if config.WebDAVCacheTTLMinutes < 1 || config.WebDAVCacheTTLMinutes > 24*60 {
-		config.WebDAVCacheTTLMinutes = defaultURLCacheTTL
-	}
-	if config.QuarkDownloadCacheTTLMinutes < 1 || config.QuarkDownloadCacheTTLMinutes > 24*60 {
-		config.QuarkDownloadCacheTTLMinutes = defaultURLCacheTTL
-	}
-	if config.QuarkIDCacheTTLMinutes < minQuarkIDCacheTTLMinutes || config.QuarkIDCacheTTLMinutes > maxQuarkIDCacheTTLMinutes {
-		config.QuarkIDCacheTTLMinutes = defaultQuarkIDCacheTTL
 	}
 	if config.VideoMetadataMaxAgeDays < minVideoMetadataMaxAgeDays || config.VideoMetadataMaxAgeDays > maxVideoMetadataMaxAgeDays {
 		config.VideoMetadataMaxAgeDays = defaultVideoMetadataMaxAgeDays
@@ -207,26 +172,12 @@ func NewAppService() (*AppService, error) {
 		config.MobileLongPressRate = defaultMobileLongPressRate
 	}
 
-	proxy, err := NewWebDAVProxy(defaultWebDAVEndpoint, time.Duration(config.WebDAVCacheTTLMinutes)*time.Minute)
-	if err != nil {
-		return nil, err
-	}
-	quark, err := NewQuarkDrive(
-		time.Duration(config.QuarkDownloadCacheTTLMinutes)*time.Minute,
-		time.Duration(config.QuarkIDCacheTTLMinutes)*time.Minute,
-	)
-	if err != nil {
-		_ = proxy.Close()
-		return nil, err
-	}
 	videoMetadataCache, err := NewVideoMetadataCache(
 		filepath.Join(filepath.Dir(configPath), "video-metadata"),
 		time.Duration(config.VideoMetadataMaxAgeDays)*24*time.Hour,
 		int64(config.VideoMetadataMaxSizeMB)*1024*1024,
 	)
 	if err != nil {
-		_ = proxy.Close()
-		_ = quark.Close()
 		return nil, err
 	}
 	videoSnapshotDirectory := filepath.Join(filepath.Dir(configPath), "video-snapshots")
@@ -236,36 +187,61 @@ func NewAppService() (*AppService, error) {
 		int64(config.VideoSnapshotMaxSizeMB)*1024*1024,
 	)
 	if err != nil {
-		_ = proxy.Close()
-		_ = quark.Close()
 		return nil, err
 	}
-	proxy.SetVideoSnapshotDirectory(videoSnapshotDirectory)
 	playbackProgress, err := NewPlaybackProgressStore(
 		filepath.Join(filepath.Dir(configPath), "playback-progress.json"),
 		time.Duration(config.PlaybackMaxAgeDays)*24*time.Hour,
 		int64(config.PlaybackMaxSizeMB)*1024*1024,
 	)
 	if err != nil {
-		_ = proxy.Close()
-		_ = quark.Close()
 		return nil, err
+	}
+
+	proxy, err := NewWebDAVProxy()
+	if err != nil {
+		return nil, err
+	}
+	proxy.SetVideoSnapshotDirectory(videoSnapshotDirectory)
+	seenNames := make(map[string]struct{}, len(config.Accounts))
+	seenIDs := make(map[string]struct{}, len(config.Accounts))
+	for i := range config.Accounts {
+		account, err := normalizeWebDAVAccount(config.Accounts[i])
+		if err != nil {
+			_ = proxy.Close()
+			return nil, fmt.Errorf("invalid WebDAV account %d: %w", i+1, err)
+		}
+		nameKey := strings.ToLower(account.Name)
+		if _, exists := seenNames[nameKey]; exists {
+			_ = proxy.Close()
+			return nil, fmt.Errorf("WebDAV 名称重复: %s", account.Name)
+		}
+		seenNames[nameKey] = struct{}{}
+		if _, exists := seenIDs[account.ID]; exists {
+			_ = proxy.Close()
+			return nil, fmt.Errorf("WebDAV ID 重复: %s", account.ID)
+		}
+		seenIDs[account.ID] = struct{}{}
+		if err := proxy.SetAccount(account); err != nil {
+			_ = proxy.Close()
+			return nil, err
+		}
+		config.Accounts[i] = account
+	}
+	if len(config.Accounts) == 0 {
+		config.ActiveAccountID = ""
+	} else if !proxy.HasAccount(config.ActiveAccountID) {
+		config.ActiveAccountID = config.Accounts[0].ID
 	}
 	service := &AppService{
 		config:         config,
 		configPath:     configPath,
 		proxy:          proxy,
-		quark:          quark,
 		videoMetadata:  videoMetadataCache,
 		videoSnapshots: videoSnapshotCache,
 		progress:       playbackProgress,
 		httpClient:     &http.Client{Timeout: 30 * time.Second},
 	}
-	if config.Username != "" && config.Password != "" {
-		service.credentials = credentials{username: config.Username, password: config.Password}
-	}
-	service.provider = config.Provider
-	service.quarkCookie = config.QuarkCookie
 	return service, nil
 }
 
@@ -282,35 +258,29 @@ func resolveConfigPath() (string, error) {
 }
 
 func (s *AppService) close() error {
-	proxyErr := s.proxy.Close()
-	quarkErr := s.quark.Close()
-	if proxyErr != nil {
-		return proxyErr
+	s.mu.RLock()
+	proxy := s.proxy
+	s.mu.RUnlock()
+	if proxy == nil {
+		return nil
 	}
-	return quarkErr
+	return proxy.Close()
 }
 
 func (s *AppService) GetState() AppState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	storageDirectory := filepath.Dir(s.configPath)
-	proxyBaseURL := s.proxy.BaseURL()
-	if s.provider == providerQuark {
-		proxyBaseURL = s.quark.BaseURL()
+	accounts := make([]WebDAVAccountState, 0, len(s.config.Accounts))
+	for _, account := range s.config.Accounts {
+		accounts = append(accounts, WebDAVAccountState{
+			WebDAVAccount: account,
+		})
 	}
 	return AppState{
-		Connected:                           s.connected123 || s.connectedQuark,
-		Connected123:                        s.connected123,
-		ConnectedQuark:                      s.connectedQuark,
-		Provider:                            s.provider,
-		Username:                            s.credentials.username,
-		Password:                            s.credentials.password,
-		QuarkCookie:                         s.quarkCookie,
-		Endpoint:                            defaultWebDAVEndpoint,
-		QuarkEndpoint:                       defaultQuarkAPIEndpoint,
-		WebDAVCacheTTLMinutes:               s.config.WebDAVCacheTTLMinutes,
-		QuarkDownloadCacheTTLMinutes:        s.config.QuarkDownloadCacheTTLMinutes,
-		QuarkIDCacheTTLMinutes:              s.config.QuarkIDCacheTTLMinutes,
+		Connected:                           len(accounts) > 0 && s.config.ActiveAccountID != "",
+		Accounts:                            accounts,
+		ActiveAccountID:                     s.config.ActiveAccountID,
 		VideoMetadataMaxAgeDays:             s.config.VideoMetadataMaxAgeDays,
 		VideoMetadataMaxSizeMB:              s.config.VideoMetadataMaxSizeMB,
 		VideoMetadataThumbnailOffsetPercent: s.config.VideoMetadataThumbnailOffsetPercent,
@@ -326,143 +296,150 @@ func (s *AppService) GetState() AppState {
 		VideoMetadataDirectory:              filepath.Join(storageDirectory, "video-metadata"),
 		VideoSnapshotDirectory:              filepath.Join(storageDirectory, "video-snapshots"),
 		PlaybackProgressPath:                s.progress.Path(),
-		ProxyBaseURL:                        proxyBaseURL,
-		WebDAVProxyBaseURL:                  s.proxy.BaseURL(),
-		QuarkProxyBaseURL:                   s.quark.BaseURL(),
 	}
 }
 
-func (s *AppService) Login(ctx context.Context, username, password string) (AppState, error) {
-	username = strings.TrimSpace(username)
-	if username == "" || password == "" {
-		return AppState{}, errors.New("账号和密码不能为空")
+func (s *AppService) AddWebDAVAccount(ctx context.Context, name, endpoint, username, password string) (AppState, error) {
+	account, err := normalizeWebDAVAccount(WebDAVAccount{
+		ID:       newWebDAVAccountID(),
+		Name:     name,
+		Endpoint: endpoint,
+		Username: username,
+		Password: password,
+	})
+	if err != nil {
+		return AppState{}, err
 	}
-
-	creds := credentials{username: username, password: password}
-	if _, err := s.listDirectoryWithCredentials(ctx, "/", creds); err != nil {
-		return AppState{}, fmt.Errorf("WebDAV 登录失败: %w", err)
+	if _, err := s.listDirectoryWithAccount(ctx, "/", account); err != nil {
+		return AppState{}, fmt.Errorf("WebDAV 连接失败: %w", err)
 	}
 
 	s.mu.Lock()
-	previousConfig := s.config
-	previousCredentials := s.credentials
-	previousProvider := s.provider
-	previousConnected := s.connected123
-	s.config.Username = username
-	s.config.Password = password
-	s.config.Provider = provider123
-	config := s.config
-	s.credentials = creds
-	s.provider = provider123
-	s.connected123 = true
-	s.mu.Unlock()
-	if err := s.saveConfig(config); err != nil {
-		s.mu.Lock()
-		s.config = previousConfig
-		s.credentials = previousCredentials
-		s.provider = previousProvider
-		s.connected123 = previousConnected
+	if err := ensureUniqueWebDAVName(s.config.Accounts, account.Name, ""); err != nil {
 		s.mu.Unlock()
 		return AppState{}, err
 	}
-	s.proxy.SetCredentials(username, password)
-	s.proxy.ClearCache()
-
-	return s.GetState(), nil
-}
-
-func (s *AppService) LoginQuark(ctx context.Context, cookie string) (AppState, error) {
-	cookie = strings.TrimSpace(cookie)
-	if cookie == "" {
-		return AppState{}, errors.New("Cookie 不能为空")
+	if s.proxy == nil {
+		s.mu.Unlock()
+		return AppState{}, errors.New("WebDAV 代理未启动")
 	}
-	if err := s.quark.ValidateCookie(ctx, cookie); err != nil {
-		return AppState{}, fmt.Errorf("夸克网盘登录失败: %w", err)
-	}
-
-	s.mu.Lock()
-	previousConfig := s.config
-	previousProvider := s.provider
-	previousCookie := s.quarkCookie
-	previousConnected := s.connectedQuark
-	s.config.Provider = providerQuark
-	s.config.QuarkCookie = cookie
-	config := s.config
-	s.provider = providerQuark
-	s.quarkCookie = cookie
-	s.connectedQuark = true
-	s.mu.Unlock()
-	if err := s.saveConfig(config); err != nil {
-		s.mu.Lock()
-		s.config = previousConfig
-		s.provider = previousProvider
-		s.quarkCookie = previousCookie
-		s.connectedQuark = previousConnected
+	if err := s.proxy.SetAccount(account); err != nil {
 		s.mu.Unlock()
 		return AppState{}, err
 	}
-	s.quark.SetCookie(cookie)
-	s.quark.ClearIDCache()
-	s.quark.ClearDownloadCache()
+	previous := s.config
+	s.config.Accounts = append(s.config.Accounts, account)
+	s.config.ActiveAccountID = account.ID
+	config := s.config
+	s.mu.Unlock()
+	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.config = previous
+		s.proxy.RemoveAccount(account.ID)
+		s.mu.Unlock()
+		return AppState{}, err
+	}
 	return s.GetState(), nil
 }
 
-func (s *AppService) Logout() AppState {
-	s.mu.Lock()
-	provider := s.provider
-	if provider == providerQuark {
-		s.config.QuarkCookie = ""
-		s.quarkCookie = ""
-		s.connectedQuark = false
-		if s.connected123 {
-			s.provider = provider123
-		}
-	} else {
-		s.config.Username = ""
-		s.config.Password = ""
-		s.credentials = credentials{}
-		s.connected123 = false
-		if s.connectedQuark {
-			s.provider = providerQuark
-		}
+func (s *AppService) UpdateWebDAVAccount(ctx context.Context, id, name, endpoint, username, password string) (AppState, error) {
+	id = strings.TrimSpace(id)
+	account, err := normalizeWebDAVAccount(WebDAVAccount{
+		ID:       id,
+		Name:     name,
+		Endpoint: endpoint,
+		Username: username,
+		Password: password,
+	})
+	if err != nil {
+		return AppState{}, err
 	}
-	s.config.Provider = s.provider
-	config := s.config
-	s.mu.Unlock()
-	_ = s.saveConfig(config)
-	if provider == providerQuark {
-		s.quark.SetCookie("")
-		s.quark.ClearIDCache()
-		s.quark.ClearDownloadCache()
-	} else {
-		s.proxy.SetCredentials("", "")
-		s.proxy.ClearCache()
-	}
-	return s.GetState()
-}
-
-func (s *AppService) SwitchProvider(provider string) (AppState, error) {
-	provider = strings.TrimSpace(provider)
-	if provider != provider123 && provider != providerQuark {
-		return AppState{}, errors.New("未知网盘类型")
+	if _, err := s.listDirectoryWithAccount(ctx, "/", account); err != nil {
+		return AppState{}, fmt.Errorf("WebDAV 连接失败: %w", err)
 	}
 
 	s.mu.Lock()
-	if (provider == provider123 && !s.connected123) || (provider == providerQuark && !s.connectedQuark) {
+	index := accountIndexByID(s.config.Accounts, id)
+	if index < 0 {
 		s.mu.Unlock()
-		return AppState{}, errors.New("目标网盘尚未登录")
+		return AppState{}, errors.New("WebDAV 不存在")
 	}
-	previousProvider := s.provider
-	previousConfigProvider := s.config.Provider
-	s.provider = provider
-	s.config.Provider = provider
+	if err := ensureUniqueWebDAVName(s.config.Accounts, account.Name, id); err != nil {
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	if s.proxy == nil {
+		s.mu.Unlock()
+		return AppState{}, errors.New("WebDAV 代理未启动")
+	}
+	oldAccount := s.config.Accounts[index]
+	if err := s.proxy.SetAccount(account); err != nil {
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	previous := s.config
+	s.config.Accounts[index] = account
 	config := s.config
 	s.mu.Unlock()
-
 	if err := s.saveConfig(config); err != nil {
 		s.mu.Lock()
-		s.provider = previousProvider
-		s.config.Provider = previousConfigProvider
+		s.config = previous
+		_ = s.proxy.SetAccount(oldAccount)
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	return s.GetState(), nil
+}
+
+func (s *AppService) RemoveWebDAVAccount(id string) (AppState, error) {
+	id = strings.TrimSpace(id)
+	s.mu.Lock()
+	index := accountIndexByID(s.config.Accounts, id)
+	if index < 0 {
+		s.mu.Unlock()
+		return AppState{}, errors.New("WebDAV 不存在")
+	}
+	previous := s.config
+	removedAccount := s.config.Accounts[index]
+	s.config.Accounts = append(s.config.Accounts[:index:index], s.config.Accounts[index+1:]...)
+	if s.proxy != nil {
+		s.proxy.RemoveAccount(id)
+	}
+	if s.config.ActiveAccountID == id {
+		if len(s.config.Accounts) > 0 {
+			s.config.ActiveAccountID = s.config.Accounts[0].ID
+		} else {
+			s.config.ActiveAccountID = ""
+		}
+	}
+	config := s.config
+	s.mu.Unlock()
+	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.config = previous
+		if s.proxy != nil {
+			_ = s.proxy.SetAccount(removedAccount)
+		}
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	return s.GetState(), nil
+}
+
+func (s *AppService) SwitchWebDAVAccount(id string) (AppState, error) {
+	id = strings.TrimSpace(id)
+	s.mu.Lock()
+	if accountIndexByID(s.config.Accounts, id) < 0 || s.proxy == nil || !s.proxy.HasAccount(id) {
+		s.mu.Unlock()
+		return AppState{}, errors.New("WebDAV 不存在")
+	}
+	previous := s.config.ActiveAccountID
+	s.config.ActiveAccountID = id
+	config := s.config
+	s.mu.Unlock()
+	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.config.ActiveAccountID = previous
 		s.mu.Unlock()
 		return AppState{}, err
 	}
@@ -470,126 +447,25 @@ func (s *AppService) SwitchProvider(provider string) (AppState, error) {
 }
 
 func (s *AppService) ListDirectory(ctx context.Context, remotePath string) ([]FileEntry, error) {
-	provider, err := s.currentProvider()
+	account, err := s.currentAccount()
 	if err != nil {
 		return nil, err
 	}
-	remotePath = normalizeRemotePath(remotePath)
-	if provider == providerQuark {
-		return s.quark.ListDirectory(ctx, remotePath)
-	}
-	creds, err := s.currentCredentials()
-	if err != nil {
-		return nil, err
-	}
-	return s.listDirectoryWithCredentials(ctx, remotePath, creds)
+	return s.listDirectoryWithAccount(ctx, remotePath, account)
 }
 
 func (s *AppService) GetPlaybackURL(remotePath string) (string, error) {
-	provider, err := s.currentProvider()
+	account, err := s.currentAccount()
 	if err != nil {
 		return "", err
 	}
-	if provider == providerQuark {
-		return s.quark.URLForPath(normalizeRemotePath(remotePath)), nil
+	s.mu.RLock()
+	proxy := s.proxy
+	s.mu.RUnlock()
+	if proxy == nil {
+		return "", errors.New("WebDAV 代理未启动")
 	}
-	if _, err := s.currentCredentials(); err != nil {
-		return "", err
-	}
-	return s.proxy.URLForPath(normalizeRemotePath(remotePath)), nil
-}
-
-func (s *AppService) ListRedirectCache(provider string) ([]RedirectCacheEntry, error) {
-	switch strings.TrimSpace(provider) {
-	case providerQuark:
-		return s.quark.DownloadCacheEntries(), nil
-	case provider123:
-		return s.proxy.CacheEntries(), nil
-	default:
-		return nil, errors.New("未知网盘类型")
-	}
-}
-
-func (s *AppService) ClearRedirectCache(provider string) error {
-	switch strings.TrimSpace(provider) {
-	case providerQuark:
-		s.quark.ClearDownloadCache()
-		return nil
-	case provider123:
-		s.proxy.ClearCache()
-		return nil
-	default:
-		return errors.New("未知网盘类型")
-	}
-}
-
-func (s *AppService) SetWebDAVCacheTTL(minutes int) (AppState, error) {
-	if minutes < 1 || minutes > 24*60 {
-		return AppState{}, errors.New("123 URL 缓存时间必须在 1 到 1440 分钟之间")
-	}
-
-	s.mu.Lock()
-	previous := s.config
-	s.config.WebDAVCacheTTLMinutes = minutes
-	config := s.config
-	s.mu.Unlock()
-
-	if err := s.saveConfig(config); err != nil {
-		s.mu.Lock()
-		s.config = previous
-		s.mu.Unlock()
-		return AppState{}, err
-	}
-	s.proxy.SetTTL(time.Duration(minutes) * time.Minute)
-	return s.GetState(), nil
-}
-
-func (s *AppService) SetQuarkDownloadCacheTTL(minutes int) (AppState, error) {
-	if minutes < 1 || minutes > 24*60 {
-		return AppState{}, errors.New("夸克下载 URL 缓存时间必须在 1 到 1440 分钟之间")
-	}
-
-	s.mu.Lock()
-	previous := s.config
-	s.config.QuarkDownloadCacheTTLMinutes = minutes
-	config := s.config
-	s.mu.Unlock()
-
-	if err := s.saveConfig(config); err != nil {
-		s.mu.Lock()
-		s.config = previous
-		s.mu.Unlock()
-		return AppState{}, err
-	}
-	s.quark.SetDownloadTTL(time.Duration(minutes) * time.Minute)
-	return s.GetState(), nil
-}
-
-func (s *AppService) GetQuarkIDCacheStats() QuarkIDCacheStats {
-	return s.quark.IDCacheStats()
-}
-
-func (s *AppService) ClearQuarkIDCache() QuarkIDCacheStats {
-	return s.quark.ClearIDCache()
-}
-
-func (s *AppService) SetQuarkIDCacheTTL(minutes int) (AppState, error) {
-	if minutes < minQuarkIDCacheTTLMinutes || minutes > maxQuarkIDCacheTTLMinutes {
-		return AppState{}, fmt.Errorf("夸克路径 ID 缓存时间必须在 %d 到 %d 分钟之间", minQuarkIDCacheTTLMinutes, maxQuarkIDCacheTTLMinutes)
-	}
-	s.mu.Lock()
-	previous := s.config
-	s.config.QuarkIDCacheTTLMinutes = minutes
-	config := s.config
-	s.mu.Unlock()
-	if err := s.saveConfig(config); err != nil {
-		s.mu.Lock()
-		s.config = previous
-		s.mu.Unlock()
-		return AppState{}, err
-	}
-	s.quark.SetIDTTL(time.Duration(minutes) * time.Minute)
-	return s.GetState(), nil
+	return proxy.URLForPath(account.ID, normalizeRemotePath(remotePath)), nil
 }
 
 func (s *AppService) GetVideoMetadata(remotePath, modifiedAt string) (VideoMetadataResult, error) {
@@ -658,6 +534,12 @@ func (s *AppService) GetVideoSnapshots(remotePath, modifiedAt string) ([]VideoSn
 	if err != nil {
 		return nil, err
 	}
+	s.mu.RLock()
+	proxy := s.proxy
+	s.mu.RUnlock()
+	if proxy == nil {
+		return nil, errors.New("WebDAV 代理未启动")
+	}
 	entries, err := s.videoSnapshots.GetSeries(videoSnapshotCacheKey(accountKey, remotePath, modifiedAt))
 	if err != nil {
 		return nil, err
@@ -666,7 +548,7 @@ func (s *AppService) GetVideoSnapshots(remotePath, modifiedAt string) ([]VideoSn
 	for _, entry := range entries {
 		result = append(result, VideoSnapshot{
 			Position: entry.Position,
-			URL:      s.proxy.VideoSnapshotURL(entry.FileName),
+			URL:      proxy.VideoSnapshotURL(entry.FileName),
 		})
 	}
 	return result, nil
@@ -857,55 +739,32 @@ func (s *AppService) saveConfig(config diskConfig) error {
 	return nil
 }
 
-func (s *AppService) currentCredentials() (credentials, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if !s.connected123 || s.provider != provider123 || s.credentials.username == "" || s.credentials.password == "" {
-		return credentials{}, errors.New("尚未登录 WebDAV")
-	}
-	return s.credentials, nil
-}
-
-func (s *AppService) currentProvider() (string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	switch s.provider {
-	case provider123:
-		if !s.connected123 {
-			return "", errors.New("123 云盘尚未登录")
-		}
-	case providerQuark:
-		if !s.connectedQuark {
-			return "", errors.New("夸克网盘尚未登录")
-		}
-	default:
-		return "", errors.New("未知网盘类型")
-	}
-	return s.provider, nil
-}
-
 func (s *AppService) currentAccountKey() (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.provider == providerQuark {
-		if !s.connectedQuark || s.quarkCookie == "" {
-			return "", errors.New("尚未登录夸克网盘")
-		}
-		sum := sha256.Sum256([]byte(s.quarkCookie))
-		return fmt.Sprintf("quark:%x", sum[:]), nil
+	if s.config.ActiveAccountID == "" || s.proxy == nil || !s.proxy.HasAccount(s.config.ActiveAccountID) {
+		return "", errors.New("尚未添加 WebDAV")
 	}
-	if s.provider != provider123 {
-		return "", errors.New("未知网盘类型")
-	}
-	if !s.connected123 || s.credentials.username == "" || s.credentials.password == "" {
-		return "", errors.New("尚未登录 WebDAV")
-	}
-	return s.credentials.username, nil
+	return s.config.ActiveAccountID, nil
 }
 
-func (s *AppService) listDirectoryWithCredentials(ctx context.Context, remotePath string, creds credentials) ([]FileEntry, error) {
+func (s *AppService) currentAccount() (WebDAVAccount, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id := s.config.ActiveAccountID
+	if id == "" {
+		return WebDAVAccount{}, errors.New("尚未添加 WebDAV")
+	}
+	index := accountIndexByID(s.config.Accounts, id)
+	if index < 0 || s.proxy == nil || !s.proxy.HasAccount(id) {
+		return WebDAVAccount{}, errors.New("当前 WebDAV 不存在")
+	}
+	return s.config.Accounts[index], nil
+}
+
+func (s *AppService) listDirectoryWithAccount(ctx context.Context, remotePath string, account WebDAVAccount) ([]FileEntry, error) {
 	remotePath = normalizeRemotePath(remotePath)
-	upstreamURL, err := buildUpstreamURL(defaultWebDAVEndpoint, remotePath, nil)
+	upstreamURL, err := buildUpstreamURL(account.Endpoint, remotePath, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -925,7 +784,9 @@ func (s *AppService) listDirectoryWithCredentials(ctx context.Context, remotePat
 	if err != nil {
 		return nil, err
 	}
-	req.SetBasicAuth(creds.username, creds.password)
+	if account.Username != "" || account.Password != "" {
+		req.SetBasicAuth(account.Username, account.Password)
+	}
 	req.Header.Set("Depth", "1")
 	req.Header.Set("Content-Type", `application/xml; charset="utf-8"`)
 	req.Header.Set("User-Agent", "DrivePlayer/1.0")
@@ -950,7 +811,7 @@ func (s *AppService) listDirectoryWithCredentials(ctx context.Context, remotePat
 
 	entries := make([]FileEntry, 0, len(result.Responses))
 	for _, item := range result.Responses {
-		entry, ok := davResponseToEntry(item)
+		entry, ok := davResponseToEntry(item, account.Endpoint)
 		if !ok || sameRemotePath(entry.Path, remotePath) {
 			continue
 		}
@@ -964,6 +825,56 @@ func (s *AppService) listDirectoryWithCredentials(ctx context.Context, remotePat
 		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
 	})
 	return entries, nil
+}
+
+func normalizeWebDAVAccount(account WebDAVAccount) (WebDAVAccount, error) {
+	account.ID = strings.TrimSpace(account.ID)
+	account.Name = strings.TrimSpace(account.Name)
+	account.Endpoint = strings.TrimSpace(account.Endpoint)
+	account.Username = strings.TrimSpace(account.Username)
+	if account.ID == "" {
+		return WebDAVAccount{}, errors.New("WebDAV ID 不能为空")
+	}
+	if account.Name == "" {
+		return WebDAVAccount{}, errors.New("名称不能为空")
+	}
+	if account.Endpoint == "" {
+		return WebDAVAccount{}, errors.New("WebDAV 地址不能为空")
+	}
+	u, err := url.Parse(account.Endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return WebDAVAccount{}, errors.New("WebDAV 地址必须是有效的 http/https URL")
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/")
+	u.RawPath = ""
+	account.Endpoint = u.String()
+	return account, nil
+}
+
+func ensureUniqueWebDAVName(accounts []WebDAVAccount, name, excludeID string) error {
+	for _, account := range accounts {
+		if account.ID != excludeID && strings.EqualFold(account.Name, name) {
+			return fmt.Errorf("WebDAV 名称已存在: %s", name)
+		}
+	}
+	return nil
+}
+
+func accountIndexByID(accounts []WebDAVAccount, id string) int {
+	for i := range accounts {
+		if accounts[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func newWebDAVAccountID() string {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err == nil {
+		return hex.EncodeToString(value[:])
+	}
+	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
 type davMultiStatus struct {
@@ -992,7 +903,7 @@ type davResourceType struct {
 	Collection *struct{} `xml:"collection"`
 }
 
-func davResponseToEntry(item davResponse) (FileEntry, bool) {
+func davResponseToEntry(item davResponse, endpoint string) (FileEntry, bool) {
 	var prop *davProp
 	for i := range item.PropStats {
 		if strings.Contains(item.PropStats[i].Status, " 200 ") {
@@ -1007,7 +918,7 @@ func davResponseToEntry(item davResponse) (FileEntry, bool) {
 		return FileEntry{}, false
 	}
 
-	remotePath := remotePathFromHref(item.Href)
+	remotePath := remotePathFromHref(item.Href, endpoint)
 	if remotePath == "" {
 		return FileEntry{}, false
 	}
@@ -1040,7 +951,7 @@ func davResponseToEntry(item davResponse) (FileEntry, bool) {
 	}, true
 }
 
-func remotePathFromHref(href string) string {
+func remotePathFromHref(href, endpoint string) string {
 	u, err := url.Parse(href)
 	if err != nil {
 		return ""
@@ -1049,7 +960,7 @@ func remotePathFromHref(href string) string {
 	if err != nil {
 		decoded = u.Path
 	}
-	base, _ := url.Parse(defaultWebDAVEndpoint)
+	base, _ := url.Parse(endpoint)
 	basePath := strings.TrimSuffix(base.Path, "/")
 	if strings.HasPrefix(decoded, basePath) {
 		decoded = strings.TrimPrefix(decoded, basePath)

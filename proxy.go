@@ -14,63 +14,30 @@ import (
 	"time"
 )
 
-type RedirectCacheEntry struct {
-	Path        string `json:"path"`
-	SourceURL   string `json:"sourceUrl"`
-	RedirectURL string `json:"redirectUrl"`
-	CachedAt    string `json:"cachedAt"`
-	ExpiresAt   string `json:"expiresAt"`
-}
-
-type redirectCacheValue struct {
-	path        string
-	sourceURL   string
-	redirectURL string
-	cachedAt    time.Time
-	expiresAt   time.Time
+type webDAVProxyAccount struct {
+	endpoint *url.URL
+	username string
+	password string
 }
 
 type WebDAVProxy struct {
-	endpoint *url.URL
 	server   *http.Server
 	listener net.Listener
 
 	mu               sync.RWMutex
-	username         string
-	password         string
-	ttl              time.Duration
-	cache            map[string]redirectCacheValue
+	accounts         map[string]webDAVProxyAccount
 	videoSnapshotDir string
-
-	noRedirectClient *http.Client
-	streamClient     *http.Client
 }
 
-func NewWebDAVProxy(endpoint string, ttl time.Duration) (*WebDAVProxy, error) {
-	base, err := url.Parse(endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("parse WebDAV endpoint: %w", err)
-	}
-	if base.Scheme != "http" && base.Scheme != "https" {
-		return nil, fmt.Errorf("unsupported WebDAV endpoint scheme %q", base.Scheme)
-	}
-
+func NewWebDAVProxy() (*WebDAVProxy, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("start local WebDAV proxy: %w", err)
 	}
 
 	p := &WebDAVProxy{
-		endpoint: base,
 		listener: listener,
-		ttl:      ttl,
-		cache:    make(map[string]redirectCacheValue),
-		noRedirectClient: &http.Client{
-			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
-		streamClient: &http.Client{},
+		accounts: make(map[string]webDAVProxyAccount),
 	}
 	p.server = &http.Server{
 		Handler:           p,
@@ -90,14 +57,54 @@ func (p *WebDAVProxy) Close() error {
 }
 
 func (p *WebDAVProxy) BaseURL() string {
-	return "http://" + p.listener.Addr().String()
+	return "http://" + p.localURLHost()
 }
 
-func (p *WebDAVProxy) URLForPath(remotePath string) string {
+func (p *WebDAVProxy) localURLHost() string {
+	_, port, err := net.SplitHostPort(p.listener.Addr().String())
+	if err != nil {
+		return p.listener.Addr().String()
+	}
+	return net.JoinHostPort("localhost", port)
+}
+
+func (p *WebDAVProxy) SetAccount(account WebDAVAccount) error {
+	base, err := url.Parse(strings.TrimSpace(account.Endpoint))
+	if err != nil {
+		return fmt.Errorf("parse WebDAV endpoint: %w", err)
+	}
+	if (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
+		return fmt.Errorf("unsupported WebDAV endpoint %q", account.Endpoint)
+	}
+
+	p.mu.Lock()
+	p.accounts[account.ID] = webDAVProxyAccount{
+		endpoint: base,
+		username: account.Username,
+		password: account.Password,
+	}
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *WebDAVProxy) RemoveAccount(id string) {
+	p.mu.Lock()
+	delete(p.accounts, id)
+	p.mu.Unlock()
+}
+
+func (p *WebDAVProxy) HasAccount(id string) bool {
+	p.mu.RLock()
+	_, ok := p.accounts[id]
+	p.mu.RUnlock()
+	return ok
+}
+
+func (p *WebDAVProxy) URLForPath(accountID, remotePath string) string {
 	u := &url.URL{
 		Scheme: "http",
-		Host:   p.listener.Addr().String(),
-		Path:   "/webdav" + normalizeRemotePath(remotePath),
+		Host:   p.localURLHost(),
+		Path:   "/webdav/" + accountID + normalizeRemotePath(remotePath),
 	}
 	return u.String()
 }
@@ -111,67 +118,10 @@ func (p *WebDAVProxy) SetVideoSnapshotDirectory(dir string) {
 func (p *WebDAVProxy) VideoSnapshotURL(fileName string) string {
 	u := &url.URL{
 		Scheme: "http",
-		Host:   p.listener.Addr().String(),
+		Host:   p.localURLHost(),
 		Path:   "/video-snapshots/" + fileName,
 	}
 	return u.String()
-}
-
-func (p *WebDAVProxy) SetCredentials(username, password string) {
-	p.mu.Lock()
-	p.username = username
-	p.password = password
-	p.mu.Unlock()
-}
-
-func (p *WebDAVProxy) SetTTL(ttl time.Duration) {
-	p.mu.Lock()
-	p.ttl = ttl
-	now := time.Now()
-	for key, item := range p.cache {
-		item.expiresAt = item.cachedAt.Add(ttl)
-		if !item.expiresAt.After(now) {
-			delete(p.cache, key)
-			continue
-		}
-		p.cache[key] = item
-	}
-	p.mu.Unlock()
-}
-
-func (p *WebDAVProxy) ClearCache() {
-	p.mu.Lock()
-	clear(p.cache)
-	p.mu.Unlock()
-}
-
-func (p *WebDAVProxy) CacheEntries() []RedirectCacheEntry {
-	now := time.Now()
-	p.mu.Lock()
-	entries := make([]RedirectCacheEntry, 0, len(p.cache))
-	for key, item := range p.cache {
-		if !item.expiresAt.After(now) {
-			delete(p.cache, key)
-			continue
-		}
-		entries = append(entries, RedirectCacheEntry{
-			Path:        item.path,
-			SourceURL:   item.sourceURL,
-			RedirectURL: item.redirectURL,
-			CachedAt:    item.cachedAt.Local().Format(time.RFC3339),
-			ExpiresAt:   item.expiresAt.Local().Format(time.RFC3339),
-		})
-	}
-	p.mu.Unlock()
-
-	for i := 0; i < len(entries); i++ {
-		for j := i + 1; j < len(entries); j++ {
-			if entries[j].CachedAt > entries[i].CachedAt {
-				entries[i], entries[j] = entries[j], entries[i]
-			}
-		}
-	}
-	return entries
 }
 
 func (p *WebDAVProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -180,30 +130,43 @@ func (p *WebDAVProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.serveVideoSnapshot(w, r)
 		return
 	}
-	if !strings.HasPrefix(r.URL.Path, "/webdav") {
+
+	accountID, remotePath, ok := parseProxyWebDAVPath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	account, ok := p.getAccount(accountID)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 
-	username, password := p.getCredentials()
-	if username == "" || password == "" {
-		http.Error(w, "not logged in", http.StatusUnauthorized)
-		return
-	}
-
-	remotePath := normalizeRemotePath(strings.TrimPrefix(r.URL.Path, "/webdav"))
-	query := cloneQuery(r.URL.Query())
-	upstreamURL, err := buildUpstreamURL(p.endpoint.String(), remotePath, query)
+	upstreamURL, err := buildUpstreamURL(account.endpoint.String(), remotePath, cloneQuery(r.URL.Query()))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 
-	if r.Method == http.MethodGet {
-		p.serveGET(w, r, remotePath, upstreamURL, username, password)
+	resp, err := p.doRequest(r, accountID, account, upstreamURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	p.proxyRequest(w, r, upstreamURL, username, password, true)
+	writeProxyResponse(w, resp)
+}
+
+func parseProxyWebDAVPath(localPath string) (accountID, remotePath string, ok bool) {
+	const prefix = "/webdav/"
+	if !strings.HasPrefix(localPath, prefix) {
+		return "", "", false
+	}
+	remainder := strings.TrimPrefix(localPath, prefix)
+	accountID, remainder, found := strings.Cut(remainder, "/")
+	if !found || accountID == "" {
+		return "", "", false
+	}
+	return accountID, normalizeRemotePath("/" + remainder), true
 }
 
 func (p *WebDAVProxy) serveVideoSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -249,101 +212,44 @@ func (p *WebDAVProxy) serveVideoSnapshot(w http.ResponseWriter, r *http.Request)
 	http.ServeContent(w, r, fileName, info.ModTime(), file)
 }
 
-func (p *WebDAVProxy) getCredentials() (string, string) {
+func (p *WebDAVProxy) getAccount(id string) (webDAVProxyAccount, bool) {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.username, p.password
+	account, ok := p.accounts[id]
+	p.mu.RUnlock()
+	return account, ok
 }
 
-func (p *WebDAVProxy) serveGET(w http.ResponseWriter, r *http.Request, remotePath string, upstreamURL *url.URL, username, password string) {
-	cacheKey := upstreamURL.String()
-	if target, ok := p.cachedRedirect(cacheKey); ok {
-		resp, err := p.doRequest(r, target, "", "", false, p.streamClient)
-		if err == nil && !isExpiredSignedURLStatus(resp.StatusCode) {
-			writeProxyResponse(w, resp)
-			return
-		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-		p.deleteCache(cacheKey)
-	}
-
-	resp, err := p.doRequest(r, upstreamURL, username, password, true, p.noRedirectClient)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-
-	if resp.StatusCode != http.StatusFound {
-		writeProxyResponse(w, resp)
-		return
-	}
-
-	location := resp.Header.Get("Location")
-	resp.Body.Close()
-	if location == "" {
-		http.Error(w, "upstream 302 response has no Location header", http.StatusBadGateway)
-		return
-	}
-	target, err := upstreamURL.Parse(location)
-	if err != nil {
-		http.Error(w, "invalid upstream redirect URL", http.StatusBadGateway)
-		return
-	}
-	p.storeRedirect(cacheKey, remotePath, upstreamURL.String(), target.String())
-
-	redirectResp, err := p.doRequest(r, target, "", "", false, p.streamClient)
-	if err != nil {
-		p.deleteCache(cacheKey)
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	if isExpiredSignedURLStatus(redirectResp.StatusCode) {
-		p.deleteCache(cacheKey)
-	}
-	writeProxyResponse(w, redirectResp)
-}
-
-func (p *WebDAVProxy) proxyRequest(w http.ResponseWriter, r *http.Request, target *url.URL, username, password string, withAuth bool) {
-	resp, err := p.doRequest(r, target, username, password, withAuth, p.noRedirectClient)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	writeProxyResponse(w, resp)
-}
-
-func (p *WebDAVProxy) doRequest(source *http.Request, target *url.URL, username, password string, withAuth bool, client *http.Client) (*http.Response, error) {
+func (p *WebDAVProxy) doRequest(source *http.Request, accountID string, account webDAVProxyAccount, target *url.URL) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(source.Context(), source.Method, target.String(), source.Body)
 	if err != nil {
 		return nil, err
 	}
 	req.Header = source.Header.Clone()
+	req.ContentLength = source.ContentLength
 	stripProxyOnlyHeaders(req.Header)
 	if destination := req.Header.Get("Destination"); destination != "" {
-		req.Header.Set("Destination", p.rewriteDestination(destination))
+		req.Header.Set("Destination", p.rewriteDestination(destination, accountID, account.endpoint))
 	}
 	req.Header.Set("User-Agent", "DrivePlayer/1.0")
-	if withAuth {
-		req.SetBasicAuth(username, password)
+	if account.username != "" || account.password != "" {
+		req.SetBasicAuth(account.username, account.password)
 	}
-	return client.Do(req)
+	return http.DefaultTransport.RoundTrip(req)
 }
 
-func (p *WebDAVProxy) rewriteDestination(destination string) string {
+func (p *WebDAVProxy) rewriteDestination(destination, accountID string, endpoint *url.URL) string {
 	u, err := url.Parse(destination)
 	if err != nil {
 		return destination
 	}
-	if u.Host != "" && !strings.EqualFold(u.Host, p.listener.Addr().String()) {
+	if u.Host != "" && !strings.EqualFold(u.Host, p.localURLHost()) {
 		return destination
 	}
-	if !strings.HasPrefix(u.Path, "/webdav") {
+	destinationAccountID, remotePath, ok := parseProxyWebDAVPath(u.Path)
+	if !ok || destinationAccountID != accountID {
 		return destination
 	}
-	query := cloneQuery(u.Query())
-	target, err := buildUpstreamURL(p.endpoint.String(), strings.TrimPrefix(u.Path, "/webdav"), query)
+	target, err := buildUpstreamURL(endpoint.String(), remotePath, cloneQuery(u.Query()))
 	if err != nil {
 		return destination
 	}
@@ -371,48 +277,6 @@ func stripProxyOnlyHeaders(header http.Header) {
 	header.Del("Proxy-Connection")
 }
 
-func isExpiredSignedURLStatus(status int) bool {
-	return status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusGone
-}
-
-func (p *WebDAVProxy) cachedRedirect(key string) (*url.URL, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	item, ok := p.cache[key]
-	if !ok {
-		return nil, false
-	}
-	if !item.expiresAt.After(time.Now()) {
-		delete(p.cache, key)
-		return nil, false
-	}
-	target, err := url.Parse(item.redirectURL)
-	if err != nil {
-		delete(p.cache, key)
-		return nil, false
-	}
-	return target, true
-}
-
-func (p *WebDAVProxy) storeRedirect(key, remotePath, sourceURL, redirectURL string) {
-	p.mu.Lock()
-	now := time.Now()
-	p.cache[key] = redirectCacheValue{
-		path:        remotePath,
-		sourceURL:   sourceURL,
-		redirectURL: redirectURL,
-		cachedAt:    now,
-		expiresAt:   now.Add(p.ttl),
-	}
-	p.mu.Unlock()
-}
-
-func (p *WebDAVProxy) deleteCache(key string) {
-	p.mu.Lock()
-	delete(p.cache, key)
-	p.mu.Unlock()
-}
-
 func buildUpstreamURL(endpoint, remotePath string, query url.Values) (*url.URL, error) {
 	base, err := url.Parse(endpoint)
 	if err != nil {
@@ -422,7 +286,11 @@ func buildUpstreamURL(endpoint, remotePath string, query url.Values) (*url.URL, 
 	base.Path = strings.TrimSuffix(base.Path, "/") + remotePath
 	base.RawPath = ""
 	if query != nil {
-		base.RawQuery = query.Encode()
+		mergedQuery := base.Query()
+		for key, values := range query {
+			mergedQuery[key] = append([]string(nil), values...)
+		}
+		base.RawQuery = mergedQuery.Encode()
 	}
 	return base, nil
 }

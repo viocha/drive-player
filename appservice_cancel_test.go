@@ -14,7 +14,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-func TestListDirectoryWithCredentialsPropagatesCancellationToUpstream(t *testing.T) {
+func TestListDirectoryWithAccountPropagatesCancellationToUpstream(t *testing.T) {
 	started := make(chan struct{})
 	upstreamCanceled := make(chan error, 1)
 
@@ -32,7 +32,7 @@ func TestListDirectoryWithCredentialsPropagatesCancellationToUpstream(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := service.listDirectoryWithCredentials(ctx, "/", credentials{username: "user", password: "pass"})
+		_, err := service.listDirectoryWithAccount(ctx, "/", WebDAVAccount{ID: "test", Name: "test", Endpoint: "https://example.invalid/webdav", Username: "user", Password: "pass"})
 		done <- err
 	}()
 
@@ -55,9 +55,9 @@ func TestListDirectoryWithCredentialsPropagatesCancellationToUpstream(t *testing
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("listDirectoryWithCredentials error = %v, want context.Canceled", err)
+			t.Fatalf("listDirectoryWithAccount error = %v, want context.Canceled", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("listDirectoryWithCredentials did not return after cancellation")
+		t.Fatal("listDirectoryWithAccount did not return after cancellation")
 	}
 }

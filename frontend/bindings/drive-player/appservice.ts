@@ -9,16 +9,12 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 // @ts-ignore: Unused imports
 import * as $models from "./models.js";
 
+export function AddWebDAVAccount(name: string, endpoint: string, username: string, password: string): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(16629999, name, endpoint, username, password);
+}
+
 export function ClearPlaybackProgress(): $CancellablePromise<$models.PlaybackProgressStats> {
     return $Call.ByID(1808486217);
-}
-
-export function ClearQuarkIDCache(): $CancellablePromise<$models.QuarkIDCacheStats> {
-    return $Call.ByID(3346467616);
-}
-
-export function ClearRedirectCache(provider: string): $CancellablePromise<void> {
-    return $Call.ByID(3571716791, provider);
 }
 
 export function ClearVideoMetadataCache(): $CancellablePromise<$models.VideoMetadataCacheStats> {
@@ -49,10 +45,6 @@ export function GetPlaybackURL(remotePath: string): $CancellablePromise<string> 
     return $Call.ByID(3299233076, remotePath);
 }
 
-export function GetQuarkIDCacheStats(): $CancellablePromise<$models.QuarkIDCacheStats> {
-    return $Call.ByID(3402728252);
-}
-
 export function GetState(): $CancellablePromise<$models.AppState> {
     return $Call.ByID(800887515);
 }
@@ -77,24 +69,12 @@ export function ListDirectory(remotePath: string): $CancellablePromise<$models.F
     return $Call.ByID(1954761069, remotePath);
 }
 
-export function ListRedirectCache(provider: string): $CancellablePromise<$models.RedirectCacheEntry[] | null> {
-    return $Call.ByID(1269581720, provider);
-}
-
-export function Login(username: string, password: string): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(1052012959, username, password);
-}
-
-export function LoginQuark(cookie: string): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(2682859179, cookie);
-}
-
-export function Logout(): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(686857892);
-}
-
 export function OpenStorageDirectory(): $CancellablePromise<void> {
     return $Call.ByID(495934702);
+}
+
+export function RemoveWebDAVAccount(id: string): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(861623966, id);
 }
 
 export function SavePlaybackProgress(remotePath: string, position: number, duration: number): $CancellablePromise<$models.PlaybackProgressStats> {
@@ -121,14 +101,6 @@ export function SetPlaybackProgressSettings(maxAgeDays: number, maxSizeMB: numbe
     return $Call.ByID(3472923853, maxAgeDays, maxSizeMB);
 }
 
-export function SetQuarkDownloadCacheTTL(minutes: number): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(1249516710, minutes);
-}
-
-export function SetQuarkIDCacheTTL(minutes: number): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(3209867527, minutes);
-}
-
 export function SetVideoMetadataSettings(maxAgeDays: number, maxSizeMB: number, offsetPercent: number): $CancellablePromise<$models.AppState> {
     return $Call.ByID(2562364601, maxAgeDays, maxSizeMB, offsetPercent);
 }
@@ -137,10 +109,10 @@ export function SetVideoSnapshotSettings(maxAgeDays: number, maxSizeMB: number):
     return $Call.ByID(1769175436, maxAgeDays, maxSizeMB);
 }
 
-export function SetWebDAVCacheTTL(minutes: number): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(2202511669, minutes);
+export function SwitchWebDAVAccount(id: string): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(449919946, id);
 }
 
-export function SwitchProvider(provider: string): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(3633461903, provider);
+export function UpdateWebDAVAccount(id: string, name: string, endpoint: string, username: string, password: string): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(2480684425, id, name, endpoint, username, password);
 }

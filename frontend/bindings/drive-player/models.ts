@@ -3,17 +3,8 @@
 
 export interface AppState {
     "connected": boolean;
-    "connected123": boolean;
-    "connectedQuark": boolean;
-    "provider": string;
-    "username": string;
-    "password": string;
-    "quarkCookie": string;
-    "endpoint": string;
-    "quarkEndpoint": string;
-    "webdavCacheTTLMinutes": number;
-    "quarkDownloadCacheTTLMinutes": number;
-    "quarkIDCacheTTLMinutes": number;
+    "accounts": WebDAVAccountState[] | null;
+    "activeAccountId": string;
     "videoMetadataMaxAgeDays": number;
     "videoMetadataMaxSizeMB": number;
     "videoMetadataThumbnailOffsetPercent": number;
@@ -29,9 +20,6 @@ export interface AppState {
     "videoMetadataDirectory": string;
     "videoSnapshotDirectory": string;
     "playbackProgressPath": string;
-    "proxyBaseUrl": string;
-    "webdavProxyBaseUrl": string;
-    "quarkProxyBaseUrl": string;
 }
 
 export interface FileEntry {
@@ -55,18 +43,6 @@ export interface PlaybackProgressStats {
     "totalBytes": number;
 }
 
-export interface QuarkIDCacheStats {
-    "count": number;
-}
-
-export interface RedirectCacheEntry {
-    "path": string;
-    "sourceUrl": string;
-    "redirectUrl": string;
-    "cachedAt": string;
-    "expiresAt": string;
-}
-
 export interface VideoMetadataCacheStats {
     "count": number;
     "totalBytes": number;
@@ -88,4 +64,12 @@ export interface VideoSnapshot {
 export interface VideoSnapshotCacheStats {
     "count": number;
     "totalBytes": number;
+}
+
+export interface WebDAVAccountState {
+    "id": string;
+    "name": string;
+    "endpoint": string;
+    "username": string;
+    "password": string;
 }
