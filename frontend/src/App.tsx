@@ -113,6 +113,7 @@ const VIDEO_EXTENSIONS = new Set([
 const THUMBNAIL_MAX_WIDTH = 320;
 const VIDEO_METADATA_CONCURRENCY = 2;
 const DIRECTORY_CACHE_SETTINGS_KEY = "drive-player.directory-cache-settings";
+const LAST_DIRECTORY_PATH_KEY_PREFIX = "drive-player.last-directory-path.";
 const DEFAULT_DIRECTORY_CACHE_TTL_MINUTES = 30;
 const LEGACY_DEFAULT_DIRECTORY_CACHE_TTL_MINUTES = 5;
 const DEFAULT_DIRECTORY_CACHE_MAX_SIZE_MB = 32;
@@ -169,9 +170,9 @@ type AccountBrowseSession = {
   forwardHistory: string[];
 };
 
-function createAccountBrowseSession(): AccountBrowseSession {
+function createAccountBrowseSession(currentPath = "/"): AccountBrowseSession {
   return {
-    currentPath: "/",
+    currentPath,
     entries: [],
     thumbnailImages: {},
     videoMetadataByPath: {},
@@ -180,6 +181,31 @@ function createAccountBrowseSession(): AccountBrowseSession {
     backHistory: [],
     forwardHistory: [],
   };
+}
+
+function loadLastDirectoryPath(accountID: WebDAVAccountID): string {
+  try {
+    const value = window.localStorage.getItem(`${LAST_DIRECTORY_PATH_KEY_PREFIX}${accountID}`);
+    return value ? normalizePath(value) : "/";
+  } catch {
+    return "/";
+  }
+}
+
+function saveLastDirectoryPath(accountID: WebDAVAccountID, remotePath: string): void {
+  try {
+    window.localStorage.setItem(`${LAST_DIRECTORY_PATH_KEY_PREFIX}${accountID}`, normalizePath(remotePath));
+  } catch {
+    // Browsing still works when local storage is unavailable.
+  }
+}
+
+function clearLastDirectoryPath(accountID: WebDAVAccountID): void {
+  try {
+    window.localStorage.removeItem(`${LAST_DIRECTORY_PATH_KEY_PREFIX}${accountID}`);
+  } catch {
+    // Nothing else needs to be cleaned up when local storage is unavailable.
+  }
 }
 
 function loadDirectoryCacheSettings(): DirectoryCacheSettings {
@@ -2103,7 +2129,7 @@ function App() {
   const directoryCacheSettingsRef = useRef(directoryCacheSettings);
 
   const pointBrowseRefsAtAccount = useCallback((provider: WebDAVAccountID) => {
-    const session = accountBrowseSessions.current[provider] ?? createAccountBrowseSession();
+    const session = accountBrowseSessions.current[provider] ?? createAccountBrowseSession(loadLastDirectoryPath(provider));
     accountBrowseSessions.current[provider] = session;
     activeBrowseAccountID.current = provider;
     directoryCache.current = session.directoryCache;
@@ -2111,6 +2137,16 @@ function App() {
     directoryBackHistory.current = session.backHistory;
     directoryForwardHistory.current = session.forwardHistory;
     currentPathRef.current = session.currentPath;
+    return session;
+  }, []);
+
+  const rememberActiveBrowsePath = useCallback((remotePath: string) => {
+    const provider = activeBrowseAccountID.current;
+    if (!provider) return;
+    const normalized = normalizePath(remotePath);
+    const session = accountBrowseSessions.current[provider];
+    if (session) session.currentPath = normalized;
+    saveLastDirectoryPath(provider, normalized);
   }, []);
 
   const refreshAccountBrowseStats = useCallback((settings = directoryCacheSettingsRef.current) => {
@@ -2145,7 +2181,8 @@ function App() {
       .then((nextState) => {
         syncBackendState(nextState);
         if (nextState.activeAccountId) {
-          pointBrowseRefsAtAccount(nextState.activeAccountId);
+          const session = pointBrowseRefsAtAccount(nextState.activeAccountId);
+          setCurrentPath(session.currentPath);
         }
       })
       .catch((err) => setError(errorMessage(err)))
@@ -2367,6 +2404,7 @@ function App() {
       if (cached !== null) {
         const visibleEntries = cached.filter((entry) => entry.isDirectory || isVideo(entry));
         currentPathRef.current = normalized;
+        rememberActiveBrowsePath(normalized);
         pendingDirectoryScrollRestore.current = {
           path: normalized,
           scrollTop: getDirectoryScrollPosition(normalized),
@@ -2395,6 +2433,7 @@ function App() {
       if (requestId !== directoryRequestId.current || controller.signal.aborted) return;
 
       cacheDirectory(normalized, result);
+      rememberActiveBrowsePath(normalized);
       const visibleEntries = result.filter((entry) => entry.isDirectory || isVideo(entry));
       pendingDirectoryScrollRestore.current = {
         path: normalized,
@@ -2412,7 +2451,7 @@ function App() {
         setLoading(false);
       }
     }
-  }, [cacheDirectory, getCachedDirectory, getDirectoryScrollPosition, rememberDirectoryScrollPosition, startThumbnailLoading]);
+  }, [cacheDirectory, getCachedDirectory, getDirectoryScrollPosition, rememberActiveBrowsePath, rememberDirectoryScrollPosition, startThumbnailLoading]);
 
   const syncDirectoryHistoryState = useCallback(() => {
     setCanGoBack(directoryBackHistory.current.length > 0);
@@ -2479,13 +2518,13 @@ function App() {
     if (viewport) {
       rememberDirectoryScrollPosition(currentPathRef.current, viewport.scrollTop);
     }
-    session.currentPath = currentPathRef.current;
     session.entries = entries.slice();
     session.thumbnailImages = { ...thumbnailImages };
     session.videoMetadataByPath = { ...videoMetadataByPath };
   }, [entries, rememberDirectoryScrollPosition, thumbnailImages, videoMetadataByPath]);
 
   const resetAccountBrowseSession = useCallback((provider: WebDAVAccountID) => {
+    clearLastDirectoryPath(provider);
     accountBrowseSessions.current[provider] = createAccountBrowseSession();
     if (activeBrowseAccountID.current === provider) {
       pointBrowseRefsAtAccount(provider);
@@ -2662,6 +2701,7 @@ function App() {
       setActiveVideo(null);
     }
     delete accountBrowseSessions.current[account.id];
+    clearLastDirectoryPath(account.id);
     syncBackendState(nextState);
     setError("");
     if (nextState.connected) {
@@ -2885,7 +2925,7 @@ function App() {
     if (!state) return;
     const rate = Number.parseFloat(mobileLongPressRateInput);
     if (!Number.isFinite(rate) || rate < 1 || rate > 8) {
-      toast.add({ title: "设置无效", description: "移动端长按倍速必须在 1 到 8 倍之间", type: "error" });
+      toast.add({ title: "设置无效", description: "长按倍速必须在 1 到 8 倍之间", type: "error" });
       return;
     }
     try {
@@ -3640,7 +3680,7 @@ function App() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>移动端长按倍速</CardTitle>
+                  <CardTitle>长按倍速</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid max-w-xs gap-2">
@@ -3666,7 +3706,7 @@ function App() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>全屏时间、电量和进度</CardTitle>
+                  <CardTitle>全屏信息</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="flex w-full items-center justify-between gap-4">
