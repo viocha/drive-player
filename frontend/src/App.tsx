@@ -6,6 +6,8 @@ import {
   ArrowLeft,
   ArrowRight,
   CircleAlert,
+  Eye,
+  EyeOff,
   Folder,
   FolderOpen,
   HardDrive,
@@ -1969,6 +1971,7 @@ function WebDAVAccountDialog({
   const [endpoint, setEndpoint] = useState(account?.endpoint ?? "");
   const [username, setUsername] = useState(account?.username ?? "");
   const [password, setPassword] = useState(account?.password ?? "");
+  const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -2037,13 +2040,28 @@ function WebDAVAccountDialog({
           </div>
           <div className="grid gap-2">
             <Label htmlFor="account-webdav-password">密码</Label>
-            <Input
-              id="account-webdav-password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="可选"
-              type="password"
-            />
+            <div className="relative">
+              <Input
+                id="account-webdav-password"
+                className="pr-10"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="可选"
+                type={showPassword ? "text" : "password"}
+                autoComplete="current-password"
+              />
+              <Button
+                className="absolute inset-y-0 right-1 my-auto"
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                title={showPassword ? "隐藏密码" : "显示密码"}
+                onClick={() => setShowPassword((visible) => !visible)}
+              >
+                {showPassword ? <EyeOff /> : <Eye />}
+              </Button>
+            </div>
           </div>
           <Button
             className="w-full"
@@ -3068,7 +3086,12 @@ function App() {
             <SelectTrigger size="default" className="w-40" aria-label="网盘切换">
               <SelectValue>{activeAccount?.name}</SelectValue>
             </SelectTrigger>
-            <SelectContent align="start">
+            <SelectContent
+              side="bottom"
+              align="start"
+              sideOffset={4}
+              alignItemWithTrigger={false}
+            >
               {accounts.map((account) => (
                 <SelectItem key={account.id} value={account.id}>{account.name}</SelectItem>
               ))}
@@ -3421,14 +3444,6 @@ function App() {
                             </Button>
                           </div>
                         </div>
-                        {account.username && (
-                          <div className="flex justify-end text-sm">
-                            <div className="grid justify-items-end gap-1 text-right">
-                              <span className="text-muted-foreground">账号</span>
-                              <code className="break-all rounded bg-muted px-2 py-1">{account.username}</code>
-                            </div>
-                          </div>
-                        )}
                         <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
                           <Badge variant="outline">
                             文件列表 {stats.directoryCache.totalBytes === 0 ? "0 B" : formatSize(stats.directoryCache.totalBytes)} / {directoryCacheSettings.maxSizeMB} MB
