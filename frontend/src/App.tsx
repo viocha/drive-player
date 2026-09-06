@@ -1459,6 +1459,8 @@ function VideoPlayer({
           <Video
             ref={videoRef}
             src={src}
+            tabIndex={-1}
+            onFocus={(event) => event.currentTarget.blur()}
             playsInline
             autoPlay
             onLoadedMetadata={(event) => {

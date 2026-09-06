@@ -493,6 +493,7 @@ function NativeFullscreenControl({ active, onToggle }: { active: boolean; onTogg
 function SidePanelControl({ active, onToggle }: { active: boolean; onToggle: () => void }) {
   useHotkey({
     keys: "s",
+    target: "document",
     onActivate: onToggle,
   });
 
@@ -669,6 +670,10 @@ export function DriveVideoSkin({
 
   return (
     <Container
+      tabIndex={-1}
+      onFocus={(event) => {
+        if (event.target === event.currentTarget) event.currentTarget.blur();
+      }}
       className={`media-default-skin media-default-skin--video${sidePanelOpen ? " media-default-skin--side-panel-open" : ""} ${className ?? ""}`}
       style={style}
     >
@@ -809,23 +814,23 @@ export function DriveVideoSkin({
 
       <div className="media-overlay" />
 
-      <Hotkey keys="Space" action="togglePaused" />
-      <Hotkey keys="k" action="togglePaused" />
-      <Hotkey keys="m" action="toggleMuted" />
-      <Hotkey keys="f" action="toggleFullscreen" />
-      <Hotkey keys="c" action="toggleSubtitles" />
-      <Hotkey keys="i" action="togglePictureInPicture" />
-      <Hotkey keys="ArrowRight" action="seekStep" value={SEEK_TIME / 2} />
-      <Hotkey keys="ArrowLeft" action="seekStep" value={-(SEEK_TIME / 2)} />
-      <Hotkey keys="l" action="seekStep" value={SEEK_TIME} />
-      <Hotkey keys="j" action="seekStep" value={-SEEK_TIME} />
-      <Hotkey keys="ArrowUp" action="volumeStep" value={0.05} />
-      <Hotkey keys="ArrowDown" action="volumeStep" value={-0.05} />
-      <Hotkey keys="0-9" action="seekToPercent" />
-      <Hotkey keys="Home" action="seekToPercent" value={0} />
-      <Hotkey keys="End" action="seekToPercent" value={100} />
-      <Hotkey keys=">" action="speedUp" />
-      <Hotkey keys="<" action="speedDown" />
+      <Hotkey target="document" keys="Space" action="togglePaused" />
+      <Hotkey target="document" keys="k" action="togglePaused" />
+      <Hotkey target="document" keys="m" action="toggleMuted" />
+      <Hotkey target="document" keys="f" action="toggleFullscreen" />
+      <Hotkey target="document" keys="c" action="toggleSubtitles" />
+      <Hotkey target="document" keys="i" action="togglePictureInPicture" />
+      <Hotkey target="document" keys="ArrowRight" action="seekStep" value={SEEK_TIME / 2} />
+      <Hotkey target="document" keys="ArrowLeft" action="seekStep" value={-(SEEK_TIME / 2)} />
+      <Hotkey target="document" keys="l" action="seekStep" value={SEEK_TIME} />
+      <Hotkey target="document" keys="j" action="seekStep" value={-SEEK_TIME} />
+      <Hotkey target="document" keys="ArrowUp" action="volumeStep" value={0.05} />
+      <Hotkey target="document" keys="ArrowDown" action="volumeStep" value={-0.05} />
+      <Hotkey target="document" keys="0-9" action="seekToPercent" />
+      <Hotkey target="document" keys="Home" action="seekToPercent" value={0} />
+      <Hotkey target="document" keys="End" action="seekToPercent" value={100} />
+      <Hotkey target="document" keys=">" action="speedUp" />
+      <Hotkey target="document" keys="<" action="speedDown" />
 
       <StatusAnnouncer className="media-sr-only" />
       <div className="media-input-feedback">

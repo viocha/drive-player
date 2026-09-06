@@ -251,20 +251,29 @@ body {
 }
 
 .video-player-frame .media-default-skin--side-panel-open .video-player-sidebar--fullscreen {
+  /* The Video.js skin redefines Tailwind's --spacing and scales it in
+     fullscreen. Restore the app UI scale at the sidebar boundary. */
+  --spacing: 0.25rem;
   position: relative;
   z-index: 90;
   flex: 0 0 var(--video-player-sidebar-width);
   width: var(--video-player-sidebar-width);
   height: 100%;
   border-left: 1px solid var(--border);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.5;
+  letter-spacing: normal;
+}
+
+/* Video.js ships `.media-default-skin button { font: inherit }` as
+   unlayered CSS, which otherwise wins over Tailwind's button typography. */
+.video-player-frame .media-default-skin .video-player-sidebar--fullscreen button {
+  font: revert-layer;
 }
 
 .video-player-sidebar--fullscreen.video-player-sidebar--closed {
   display: none;
-}
-
-.video-player-frame .media-default-skin:focus-visible {
-  outline-color: transparent;
 }
 
 .video-player-frame .media-default-skin:has(.video-player-sidebar--fullscreen) {
