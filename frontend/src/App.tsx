@@ -2089,6 +2089,7 @@ function App() {
   );
   const [state, setState] = useState<AppState | null>(null);
   const [restoringSession, setRestoringSession] = useState(true);
+  const [showInitialLoading, setShowInitialLoading] = useState(false);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [thumbnailImages, setThumbnailImages] = useState<Record<string, string>>({});
   const [videoMetadataByPath, setVideoMetadataByPath] = useState<Record<string, VideoMediaMetadata>>({});
@@ -2115,6 +2116,11 @@ function App() {
     toast.add({ title: "请求失败", description: error, type: "error" });
     setError("");
   }, [error, showSettings]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShowInitialLoading(true), 500);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const [directoryCacheTTLInput, setDirectoryCacheTTLInput] = useState(String(directoryCacheSettings.ttlMinutes));
   const [directoryCacheMaxSizeInput, setDirectoryCacheMaxSizeInput] = useState(String(directoryCacheSettings.maxSizeMB));
@@ -3034,7 +3040,7 @@ function App() {
   if (restoringSession || !state) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <LoaderCircle className="size-7 animate-spin text-muted-foreground" />
+        {showInitialLoading && <LoaderCircle className="size-7 animate-spin text-muted-foreground" />}
       </div>
     );
   }
