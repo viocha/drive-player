@@ -10,15 +10,15 @@
     <Installer
         Path="drive-player.exe"
         Arguments=""
-        InstallLocation="C:\Program Files\My Company\My Product">
+        InstallLocation="C:\Program Files\My Company\Drive Player">
     </Installer>
     <PackageInformation
-        PackageName="My Product"
-        PackageDisplayName="My Product"
+        PackageName="Drive Player"
+        PackageDisplayName="Drive Player"
         PublisherName="CN=My Company"
         PublisherDisplayName="My Company"
         Version="0.1.0.0"
-        PackageDescription="A drive-player application">
+        PackageDescription="Drive Player cloud drive video player">
         <Capabilities>
             <Capability Name="runFullTrust" />
             
@@ -26,8 +26,8 @@
         <Applications>
             <Application
                 Id="com.example.driveplayer"
-                Description="A drive-player application"
-                DisplayName="My Product"
+                Description="Drive Player cloud drive video player"
+                DisplayName="Drive Player"
                 ExecutableName="drive-player.exe"
                 EntryPoint="Windows.FullTrustApplication">
                 
@@ -41,9 +41,9 @@
         </Dependencies>
         <Properties>
             <Framework>false</Framework>
-            <DisplayName>My Product</DisplayName>
+            <DisplayName>Drive Player</DisplayName>
             <PublisherDisplayName>My Company</PublisherDisplayName>
-            <Description>A drive-player application</Description>
+            <Description>Drive Player cloud drive video player</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>

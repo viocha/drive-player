@@ -6,9 +6,9 @@
 		"0000": {
 			"ProductVersion": "0.1.0",
 			"CompanyName": "My Company",
-			"FileDescription": "A drive-player application",
+			"FileDescription": "Drive Player cloud drive video player",
 			"LegalCopyright": "© 2026, My Company",
-			"ProductName": "My Product",
+			"ProductName": "Drive Player",
 			"Comments": "This is a comment"
 		}
 	}
