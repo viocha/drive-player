@@ -16,7 +16,7 @@
   <Properties>
     <DisplayName>Drive Player</DisplayName>
     <PublisherDisplayName>My Company</PublisherDisplayName>
-    <Description>Drive Player cloud drive video player</Description>
+    <Description>Drive Player</Description>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
   
@@ -32,7 +32,7 @@
     <Application Id="com.example.driveplayer" Executable="drive-player.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="Drive Player"
-        Description="Drive Player cloud drive video player"
+        Description="Drive Player"
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png">

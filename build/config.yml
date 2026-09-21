@@ -8,7 +8,7 @@ info:
   companyName: "My Company" # The name of the company
   productName: "Drive Player" # The name of the application
   productIdentifier: "com.mycompany.myproduct" # The unique product identifier
-  description: "Drive Player cloud drive video player" # The application description
+  description: "Drive Player" # The application description
   copyright: "(c) 2025, My Company" # Copyright text
   comments: "Some Product Comments" # Comments
   version: "0.0.1" # The application version

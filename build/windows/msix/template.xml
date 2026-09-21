@@ -18,7 +18,7 @@
         PublisherName="CN=My Company"
         PublisherDisplayName="My Company"
         Version="0.1.0.0"
-        PackageDescription="Drive Player cloud drive video player">
+        PackageDescription="Drive Player">
         <Capabilities>
             <Capability Name="runFullTrust" />
             
@@ -26,7 +26,7 @@
         <Applications>
             <Application
                 Id="com.example.driveplayer"
-                Description="Drive Player cloud drive video player"
+                Description="Drive Player"
                 DisplayName="Drive Player"
                 ExecutableName="drive-player.exe"
                 EntryPoint="Windows.FullTrustApplication">
@@ -43,7 +43,7 @@
             <Framework>false</Framework>
             <DisplayName>Drive Player</DisplayName>
             <PublisherDisplayName>My Company</PublisherDisplayName>
-            <Description>Drive Player cloud drive video player</Description>
+            <Description>Drive Player</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>
