@@ -70,6 +70,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -88,6 +89,7 @@ import {
 import { Toaster, toast } from "@/components/ui/toast";
 import { DRIVE_VIDEO_CONTROLS_ACTIVITY_EVENT, DriveVideoSkin } from "@/components/drive-video-skin";
 import { analyzeVideoMetadata, type VideoMediaMetadata } from "@/lib/video-metadata";
+import { cn } from "@/lib/utils";
 
 const Player = createPlayer({ features: videoFeatures });
 const GESTURE_ACTIVATION_DISTANCE = 8;
@@ -3086,6 +3088,7 @@ function App() {
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-2">
           <Select
+            items={accounts.map((account) => ({ value: account.id, label: account.name }))}
             value={state.activeAccountId}
             onValueChange={(value) => {
               if (value) void switchWebDAVAccount(value);
@@ -3100,9 +3103,11 @@ function App() {
               sideOffset={4}
               alignItemWithTrigger={false}
             >
-              {accounts.map((account) => (
-                <SelectItem key={account.id} value={account.id}>{account.name}</SelectItem>
-              ))}
+              <SelectGroup>
+                {accounts.map((account) => (
+                  <SelectItem key={account.id} value={account.id}>{account.name}</SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
           <Button
@@ -3200,7 +3205,7 @@ function App() {
                 </div>
               </div>
 
-              <div className="flex min-h-0 flex-1 flex-col">
+              <div className="relative flex min-h-0 flex-1 flex-col">
                 {!isMobile && (
                   <Table className="table-fixed">
                     <colgroup>
@@ -3225,20 +3230,7 @@ function App() {
                       {!isMobile && <col className="w-48" />}
                     </colgroup>
                     <TableBody>
-                      {loading ? (
-                        <TableRow className="hover:bg-transparent">
-                          <TableCell colSpan={isMobile ? 1 : 3} className="h-40 text-center text-muted-foreground">
-                            <LoaderCircle className="mx-auto size-5 animate-spin" />
-                          </TableCell>
-                        </TableRow>
-                      ) : visibleEntries.length === 0 ? (
-                        <TableRow className="hover:bg-transparent">
-                          <TableCell colSpan={isMobile ? 1 : 3} className="h-40 text-center text-muted-foreground">
-                            当前目录为空
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        visibleEntries.map((entry) => {
+                      {!loading && visibleEntries.map((entry) => {
                           const mediaMetadata = videoMetadataByPath[entry.path];
                           const thumbnailDataURL = thumbnailImages[entry.path];
                           const thumbnailResultReady = Boolean(
@@ -3338,11 +3330,20 @@ function App() {
                               </ContextMenuContent>
                             </ContextMenu>
                           );
-                        })
-                      )}
+                        })}
                     </TableBody>
                   </Table>
                 </ScrollArea>
+                {(loading || visibleEntries.length === 0) && (
+                  <div className={cn(
+                    "absolute inset-x-0 bottom-0 flex items-center justify-center text-muted-foreground",
+                    isMobile ? "top-0" : "top-10",
+                  )}>
+                    {loading
+                      ? <LoaderCircle role="status" aria-label="正在加载目录" className="size-5 animate-spin" />
+                      : "当前目录为空"}
+                  </div>
+                )}
               </div>
         </div>
       </main>
@@ -3737,7 +3738,7 @@ function App() {
                     <Switch
                       id="fullscreen-hud-enabled"
                       checked={fullscreenHUDEnabledInput}
-                      className="data-disabled:cursor-default"
+                      className="data-disabled:cursor-pointer"
                       disabled={fullscreenHUDToggleSaving}
                       onCheckedChange={(checked) => void setFullscreenHUDEnabled(checked)}
                     />
