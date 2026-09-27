@@ -68,3 +68,11 @@ tasks:
       - pnpm run {{if eq .DEV "true"}}build:dev{{else}}build{{end}}
     env:
       PRODUCTION: '{{if eq .DEV "true"}}false{{else}}true{{end}}'
+
+  dev:frontend:
+    summary: 启动前端开发服务器
+    deps:
+      - task: install:frontend:deps
+    dir: frontend
+    cmds:
+      - pnpm dev --port {{.VITE_PORT}} --strictPort

@@ -27,7 +27,7 @@ tasks:
   run:
     summary: 运行应用
     cmds:
-      - task: "{{.GOOS}}:run"
+      - task: '{{if eq .GOOS "android"}}android:run:device{{else}}windows:run{{end}}'
 
   dev:
     summary: 以开发模式运行应用
