@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,7 +18,7 @@ func TestVideoMetadataCacheSaveGetExpireAndClear(t *testing.T) {
 	}
 
 	key := videoMetadataCacheKey("user", "/video.mp4", "2026-08-15T00:00:00Z", 5)
-	stats, err := cache.Save(key, tinyThumbnailDataURL, 1920, 1080, 23.976)
+	stats, err := cache.Save(key, 1920, 1080, 23.976)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,11 +30,22 @@ func TestVideoMetadataCacheSaveGetExpireAndClear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Found || result.ThumbnailDataURL == "" || result.Width != 1920 || result.Height != 1080 || result.FrameRate != 23.976 {
+	if !result.Found || result.Width != 1920 || result.Height != 1080 || result.FrameRate != 23.976 {
 		t.Fatalf("expected cached video metadata, got %+v", result)
 	}
 
 	filePath := filepath.Join(dir, key+".json")
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if len(fields) != 3 {
+		t.Fatalf("元信息仅包含尺寸、帧率: %s", data)
+	}
 	old := time.Now().Add(-48 * time.Hour)
 	if err := os.Chtimes(filePath, old, old); err != nil {
 		t.Fatal(err)
@@ -46,7 +58,7 @@ func TestVideoMetadataCacheSaveGetExpireAndClear(t *testing.T) {
 		t.Fatal("expected expired video metadata to be removed")
 	}
 
-	if _, err := cache.Save(key, tinyThumbnailDataURL, 1920, 1080, 23.976); err != nil {
+	if _, err := cache.Save(key, 1920, 1080, 23.976); err != nil {
 		t.Fatal(err)
 	}
 	stats, err = cache.Clear()

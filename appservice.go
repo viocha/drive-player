@@ -26,10 +26,10 @@ import (
 
 const (
 	defaultVideoMetadataMaxAgeDays             = 365
-	defaultVideoMetadataMaxSizeMB              = 512
+	defaultVideoMetadataMaxSizeMB              = 16
 	defaultVideoMetadataThumbnailOffsetPercent = 10
 	defaultVideoSnapshotMaxAgeDays             = 365
-	defaultVideoSnapshotMaxSizeMB              = 1024
+	defaultVideoSnapshotMaxSizeMB              = 512
 	defaultPlaybackMaxAgeDays                  = 365
 	defaultPlaybackMaxSizeMB                   = 16
 	defaultFullscreenHUDEnabled                = false
@@ -172,19 +172,20 @@ func NewAppService() (*AppService, error) {
 		config.MobileLongPressRate = defaultMobileLongPressRate
 	}
 
-	videoMetadataCache, err := NewVideoMetadataCache(
-		filepath.Join(filepath.Dir(configPath), "video-metadata"),
-		time.Duration(config.VideoMetadataMaxAgeDays)*24*time.Hour,
-		int64(config.VideoMetadataMaxSizeMB)*1024*1024,
-	)
-	if err != nil {
-		return nil, err
-	}
 	videoSnapshotDirectory := filepath.Join(filepath.Dir(configPath), "video-snapshots")
 	videoSnapshotCache, err := NewVideoSnapshotCache(
 		videoSnapshotDirectory,
 		time.Duration(config.VideoSnapshotMaxAgeDays)*24*time.Hour,
 		int64(config.VideoSnapshotMaxSizeMB)*1024*1024,
+	)
+	if err != nil {
+		return nil, err
+	}
+	metadataDirectory := filepath.Join(filepath.Dir(configPath), "video-metadata")
+	videoMetadataCache, err := NewVideoMetadataCache(
+		metadataDirectory,
+		time.Duration(config.VideoMetadataMaxAgeDays)*24*time.Hour,
+		int64(config.VideoMetadataMaxSizeMB)*1024*1024,
 	)
 	if err != nil {
 		return nil, err
@@ -297,6 +298,36 @@ func (s *AppService) GetState() AppState {
 		VideoSnapshotDirectory:              filepath.Join(storageDirectory, "video-snapshots"),
 		PlaybackProgressPath:                s.progress.Path(),
 	}
+}
+
+func (s *AppService) TestWebDAVAccount(ctx context.Context, id string) error {
+	s.mu.RLock()
+	index := accountIndexByID(s.config.Accounts, strings.TrimSpace(id))
+	if index < 0 {
+		s.mu.RUnlock()
+		return errors.New("WebDAV 不存在")
+	}
+	account := s.config.Accounts[index]
+	s.mu.RUnlock()
+
+	result, err := s.fetchWebDAVProperties(ctx, "/", account, "0")
+	if err != nil {
+		return err
+	}
+	for _, item := range result.Responses {
+		readable := false
+		for _, prop := range item.PropStats {
+			if strings.Contains(prop.Status, " 200 ") {
+				readable = true
+				break
+			}
+		}
+		entry, ok := davResponseToEntry(item, account.Endpoint)
+		if readable && ok && sameRemotePath(entry.Path, "/") && entry.IsDirectory {
+			return nil
+		}
+	}
+	return errors.New("WebDAV 根目录不可访问")
 }
 
 func (s *AppService) AddWebDAVAccount(ctx context.Context, name, endpoint, username, password string) (AppState, error) {
@@ -473,21 +504,46 @@ func (s *AppService) GetVideoMetadata(remotePath, modifiedAt string) (VideoMetad
 	if err != nil {
 		return VideoMetadataResult{}, err
 	}
-	s.mu.RLock()
-	offsetPercent := s.config.VideoMetadataThumbnailOffsetPercent
-	s.mu.RUnlock()
-	return s.videoMetadata.Get(videoMetadataCacheKey(accountKey, remotePath, modifiedAt, offsetPercent))
+	return s.videoMetadata.Get(videoMetadataCacheKey(accountKey, remotePath, modifiedAt, defaultVideoMetadataThumbnailOffsetPercent))
 }
 
-func (s *AppService) SaveVideoMetadata(remotePath, modifiedAt, thumbnailDataURL string, width, height int, frameRate float64) (VideoMetadataCacheStats, error) {
+func (s *AppService) SaveVideoMetadata(remotePath, modifiedAt string, width, height int, frameRate float64) (VideoMetadataCacheStats, error) {
 	accountKey, err := s.currentAccountKey()
 	if err != nil {
 		return VideoMetadataCacheStats{}, err
 	}
+	return s.videoMetadata.Save(videoMetadataCacheKey(accountKey, remotePath, modifiedAt, defaultVideoMetadataThumbnailOffsetPercent), width, height, frameRate)
+}
+
+func (s *AppService) GetVideoCover(remotePath, modifiedAt string) (string, error) {
+	key, err := s.videoCoverKey(remotePath, modifiedAt)
+	if err != nil {
+		return "", err
+	}
+	name, err := s.videoSnapshots.GetCover(key)
+	if err != nil || name == "" {
+		return "", err
+	}
+	return s.proxy.VideoSnapshotURL(name), nil
+}
+
+func (s *AppService) SaveVideoCover(remotePath, modifiedAt, dataURL string) (VideoSnapshotCacheStats, error) {
+	key, err := s.videoCoverKey(remotePath, modifiedAt)
+	if err != nil {
+		return VideoSnapshotCacheStats{}, err
+	}
+	return s.videoSnapshots.SaveCover(key, dataURL)
+}
+
+func (s *AppService) videoCoverKey(remotePath, modifiedAt string) (string, error) {
+	accountKey, err := s.currentAccountKey()
+	if err != nil {
+		return "", err
+	}
 	s.mu.RLock()
-	offsetPercent := s.config.VideoMetadataThumbnailOffsetPercent
+	offset := s.config.VideoMetadataThumbnailOffsetPercent
 	s.mu.RUnlock()
-	return s.videoMetadata.Save(videoMetadataCacheKey(accountKey, remotePath, modifiedAt, offsetPercent), thumbnailDataURL, width, height, frameRate)
+	return videoMetadataCacheKey(accountKey, remotePath, modifiedAt, offset), nil
 }
 
 func (s *AppService) GetVideoMetadataCacheStats() (VideoMetadataCacheStats, error) {
@@ -498,22 +554,18 @@ func (s *AppService) ClearVideoMetadataCache() (VideoMetadataCacheStats, error) 
 	return s.videoMetadata.Clear()
 }
 
-func (s *AppService) SetVideoMetadataSettings(maxAgeDays, maxSizeMB, offsetPercent int) (AppState, error) {
+func (s *AppService) SetVideoMetadataSettings(maxAgeDays, maxSizeMB int) (AppState, error) {
 	if maxAgeDays < minVideoMetadataMaxAgeDays || maxAgeDays > maxVideoMetadataMaxAgeDays {
 		return AppState{}, fmt.Errorf("视频元信息保留时间必须在 %d 到 %d 天之间", minVideoMetadataMaxAgeDays, maxVideoMetadataMaxAgeDays)
 	}
 	if maxSizeMB < minVideoMetadataMaxSizeMB || maxSizeMB > maxVideoMetadataMaxSizeMB {
 		return AppState{}, fmt.Errorf("视频元信息缓存上限必须在 %d 到 %d MB 之间", minVideoMetadataMaxSizeMB, maxVideoMetadataMaxSizeMB)
 	}
-	if offsetPercent < minVideoMetadataThumbnailOffsetPercent || offsetPercent > maxVideoMetadataThumbnailOffsetPercent {
-		return AppState{}, fmt.Errorf("视频元信息缩略图截帧位置必须在 %d%% 到 %d%% 之间", minVideoMetadataThumbnailOffsetPercent, maxVideoMetadataThumbnailOffsetPercent)
-	}
 
 	s.mu.Lock()
 	previous := s.config
 	s.config.VideoMetadataMaxAgeDays = maxAgeDays
 	s.config.VideoMetadataMaxSizeMB = maxSizeMB
-	s.config.VideoMetadataThumbnailOffsetPercent = offsetPercent
 	config := s.config
 	s.mu.Unlock()
 
@@ -578,18 +630,22 @@ func (s *AppService) ClearVideoSnapshotCache() (VideoSnapshotCacheStats, error) 
 	return s.videoSnapshots.Clear()
 }
 
-func (s *AppService) SetVideoSnapshotSettings(maxAgeDays, maxSizeMB int) (AppState, error) {
+func (s *AppService) SetVideoSnapshotSettings(maxAgeDays, maxSizeMB, offsetPercent int) (AppState, error) {
+	if offsetPercent < minVideoMetadataThumbnailOffsetPercent || offsetPercent > maxVideoMetadataThumbnailOffsetPercent {
+		return AppState{}, fmt.Errorf("封面截帧位置必须在 %d%% 到 %d%% 之间", minVideoMetadataThumbnailOffsetPercent, maxVideoMetadataThumbnailOffsetPercent)
+	}
 	if maxAgeDays < minVideoSnapshotMaxAgeDays || maxAgeDays > maxVideoSnapshotMaxAgeDays {
-		return AppState{}, fmt.Errorf("视频截图保留时间必须在 %d 到 %d 天之间", minVideoSnapshotMaxAgeDays, maxVideoSnapshotMaxAgeDays)
+		return AppState{}, fmt.Errorf("视频关键帧保留时间必须在 %d 到 %d 天之间", minVideoSnapshotMaxAgeDays, maxVideoSnapshotMaxAgeDays)
 	}
 	if maxSizeMB < minVideoSnapshotMaxSizeMB || maxSizeMB > maxVideoSnapshotMaxSizeMB {
-		return AppState{}, fmt.Errorf("视频截图缓存上限必须在 %d 到 %d MB 之间", minVideoSnapshotMaxSizeMB, maxVideoSnapshotMaxSizeMB)
+		return AppState{}, fmt.Errorf("视频关键帧缓存上限必须在 %d 到 %d MB 之间", minVideoSnapshotMaxSizeMB, maxVideoSnapshotMaxSizeMB)
 	}
 
 	s.mu.Lock()
 	previous := s.config
 	s.config.VideoSnapshotMaxAgeDays = maxAgeDays
 	s.config.VideoSnapshotMaxSizeMB = maxSizeMB
+	s.config.VideoMetadataThumbnailOffsetPercent = offsetPercent
 	config := s.config
 	s.mu.Unlock()
 
@@ -764,6 +820,28 @@ func (s *AppService) currentAccount() (WebDAVAccount, error) {
 
 func (s *AppService) listDirectoryWithAccount(ctx context.Context, remotePath string, account WebDAVAccount) ([]FileEntry, error) {
 	remotePath = normalizeRemotePath(remotePath)
+	result, err := s.fetchWebDAVProperties(ctx, remotePath, account, "1")
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]FileEntry, 0, len(result.Responses))
+	for _, item := range result.Responses {
+		entry, ok := davResponseToEntry(item, account.Endpoint)
+		if !ok || sameRemotePath(entry.Path, remotePath) {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].IsDirectory != entries[j].IsDirectory {
+			return entries[i].IsDirectory
+		}
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+	})
+	return entries, nil
+}
+
+func (s *AppService) fetchWebDAVProperties(ctx context.Context, remotePath string, account WebDAVAccount, depth string) (*davMultiStatus, error) {
 	upstreamURL, err := buildUpstreamURL(account.Endpoint, remotePath, nil)
 	if err != nil {
 		return nil, err
@@ -787,7 +865,7 @@ func (s *AppService) listDirectoryWithAccount(ctx context.Context, remotePath st
 	if account.Username != "" || account.Password != "" {
 		req.SetBasicAuth(account.Username, account.Password)
 	}
-	req.Header.Set("Depth", "1")
+	req.Header.Set("Depth", depth)
 	req.Header.Set("Content-Type", `application/xml; charset="utf-8"`)
 	req.Header.Set("User-Agent", "DrivePlayer/1.0")
 
@@ -809,22 +887,7 @@ func (s *AppService) listDirectoryWithAccount(ctx context.Context, remotePath st
 		return nil, fmt.Errorf("parse WebDAV response: %w", err)
 	}
 
-	entries := make([]FileEntry, 0, len(result.Responses))
-	for _, item := range result.Responses {
-		entry, ok := davResponseToEntry(item, account.Endpoint)
-		if !ok || sameRemotePath(entry.Path, remotePath) {
-			continue
-		}
-		entries = append(entries, entry)
-	}
-
-	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].IsDirectory != entries[j].IsDirectory {
-			return entries[i].IsDirectory
-		}
-		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
-	})
-	return entries, nil
+	return &result, nil
 }
 
 func normalizeWebDAVAccount(account WebDAVAccount) (WebDAVAccount, error) {

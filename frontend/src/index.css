@@ -243,19 +243,18 @@ body {
   }
 }
 
-/* Video.js ships its skin as unlayered CSS. Keep layout overrides that must
-   beat the skin's root `display: block` unlayered as well. */
-.video-player-frame .media-default-skin--side-panel-open {
+/* 全屏侧栏与播放器在同一个容器中并排布局。 */
+.video-player-frame .drive-video-skin--side-panel-open {
   --video-player-sidebar-width: min(20rem, 38vw);
   display: flex;
 }
 
-.video-player-frame .media-default-skin--side-panel-open .media-player-pane {
+.video-player-frame .drive-video-skin--side-panel-open .media-player-pane {
   flex: 1 1 0;
   width: auto;
 }
 
-.video-player-frame .media-default-skin--side-panel-open .video-player-sidebar--fullscreen {
+.video-player-frame .drive-video-skin--side-panel-open .video-player-sidebar--fullscreen {
   /* The Video.js skin redefines Tailwind's --spacing and scales it in
      fullscreen. Restore the app UI scale at the sidebar boundary. */
   --spacing: 0.25rem;
@@ -271,9 +270,8 @@ body {
   letter-spacing: normal;
 }
 
-/* Video.js ships `.media-default-skin button { font: inherit }` as
-   unlayered CSS, which otherwise wins over Tailwind's button typography. */
-.video-player-frame .media-default-skin .video-player-sidebar--fullscreen button {
+/* 侧栏按钮使用应用字号。 */
+.video-player-frame .drive-video-skin .video-player-sidebar--fullscreen button {
   font: revert-layer;
 }
 
@@ -281,7 +279,7 @@ body {
   display: none;
 }
 
-.video-player-frame .media-default-skin:has(.video-player-sidebar--fullscreen) {
+.video-player-frame .drive-video-skin:has(.video-player-sidebar--fullscreen) {
   cursor: auto;
 }
 
@@ -289,7 +287,7 @@ body {
   z-index: 200;
 }
 
-.video-player-frame .media-default-skin {
+.video-player-frame .drive-video-skin {
   border-bottom-right-radius: 0;
   border-bottom-left-radius: 0;
 }
@@ -321,17 +319,18 @@ body {
   max-height: none;
 }
 
-.video-player-frame .media-button--fullscreen {
-  display: flex !important;
-}
-
 /* 缓冲时只显示加载动画，不对正在显示的视频画面添加任何遮挡。 */
-.video-player-frame .media-default-skin .media-buffering-indicator[data-visible] ~ .media-overlay {
+.video-player-frame .drive-video-skin .media-buffering-indicator::before {
   background: transparent;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   opacity: 0;
   transition: none;
+}
+
+/* 连续速览保留已呈现的画面，避免转圈动画遮住中间帧。 */
+.drive-video-skin[data-scrubbing] .media-buffering-indicator {
+  visibility: hidden;
 }
 
 .video-fullscreen-hud {

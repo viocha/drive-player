@@ -125,7 +125,12 @@ func (c *VideoSnapshotCache) Save(key string, position float64, dataURL string) 
 	}
 
 	baseName := fmt.Sprintf("%s--%012d", key, int64(math.Round(position*1000)))
-	finalPath := filepath.Join(c.dir, baseName+".png")
+	return c.saveImageLocked(baseName+".png", data)
+}
+
+func (c *VideoSnapshotCache) saveImageLocked(fileName string, data []byte) (VideoSnapshotCacheStats, error) {
+	baseName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	finalPath := filepath.Join(c.dir, fileName)
 	tmp, err := os.CreateTemp(c.dir, baseName+"-*.tmp")
 	if err != nil {
 		return VideoSnapshotCacheStats{}, fmt.Errorf("create video snapshot temp file: %w", err)
@@ -150,6 +155,51 @@ func (c *VideoSnapshotCache) Save(key string, position float64, dataURL string) 
 	now := time.Now()
 	_ = os.Chtimes(finalPath, now, now)
 	return c.pruneLocked(now)
+}
+
+// 封面和时间点截图共享容量、有效期和淘汰规则。
+func (c *VideoSnapshotCache) SaveCover(key, dataURL string) (VideoSnapshotCacheStats, error) {
+	mimeType, data, err := decodeThumbnailDataURL(dataURL)
+	if err != nil {
+		return VideoSnapshotCacheStats{}, err
+	}
+	ext := map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}[mimeType]
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := os.MkdirAll(c.dir, 0o700); err != nil {
+		return VideoSnapshotCacheStats{}, err
+	}
+	stats, err := c.saveImageLocked(key+"--cover"+ext, data)
+	if err != nil {
+		return stats, err
+	}
+	for _, other := range []string{".png", ".jpg", ".webp"} {
+		if other != ext {
+			_ = os.Remove(filepath.Join(c.dir, key+"--cover"+other))
+		}
+	}
+	return c.pruneLocked(time.Now())
+}
+
+func (c *VideoSnapshotCache) GetCover(key string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, ext := range []string{".webp", ".jpg", ".png"} {
+		name := key + "--cover" + ext
+		info, err := os.Stat(filepath.Join(c.dir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if c.maxAge > 0 && time.Since(info.ModTime()) > c.maxAge {
+			_ = os.Remove(filepath.Join(c.dir, name))
+			continue
+		}
+		return name, nil
+	}
+	return "", nil
 }
 
 func (c *VideoSnapshotCache) ClearSeries(key string) (VideoSnapshotCacheStats, error) {
@@ -276,7 +326,8 @@ func decodeVideoSnapshotDataURL(value string) ([]byte, error) {
 }
 
 func isVideoSnapshotCacheFile(name string) bool {
-	return strings.EqualFold(filepath.Ext(name), ".png") && strings.Contains(name, "--")
+	ext := strings.ToLower(filepath.Ext(name))
+	return strings.Contains(name, "--") && (ext == ".png" || ((ext == ".jpg" || ext == ".webp") && strings.HasSuffix(strings.TrimSuffix(name, ext), "--cover")))
 }
 
 func videoSnapshotPosition(name, prefix string) (float64, bool) {

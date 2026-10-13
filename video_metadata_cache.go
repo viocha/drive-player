@@ -18,11 +18,10 @@ import (
 const maxThumbnailPayloadBytes = 5 * 1024 * 1024
 
 type VideoMetadataResult struct {
-	Found            bool    `json:"found"`
-	ThumbnailDataURL string  `json:"thumbnailDataUrl"`
-	Width            int     `json:"width"`
-	Height           int     `json:"height"`
-	FrameRate        float64 `json:"frameRate"`
+	Found     bool    `json:"found"`
+	Width     int     `json:"width"`
+	Height    int     `json:"height"`
+	FrameRate float64 `json:"frameRate"`
 }
 
 type VideoMetadataCacheStats struct {
@@ -38,10 +37,9 @@ type VideoMetadataCache struct {
 }
 
 type videoMetadataCacheEntry struct {
-	ThumbnailDataURL string  `json:"thumbnailDataUrl"`
-	Width            int     `json:"width"`
-	Height           int     `json:"height"`
-	FrameRate        float64 `json:"frameRate"`
+	Width     int     `json:"width"`
+	Height    int     `json:"height"`
+	FrameRate float64 `json:"frameRate"`
 }
 
 type videoMetadataFile struct {
@@ -101,20 +99,18 @@ func (c *VideoMetadataCache) Get(key string) (VideoMetadataResult, error) {
 	}
 	_ = os.Chtimes(filePath, now, now)
 	return VideoMetadataResult{
-		Found:            true,
-		ThumbnailDataURL: entry.ThumbnailDataURL,
-		Width:            entry.Width,
-		Height:           entry.Height,
-		FrameRate:        entry.FrameRate,
+		Found:     true,
+		Width:     entry.Width,
+		Height:    entry.Height,
+		FrameRate: entry.FrameRate,
 	}, nil
 }
 
-func (c *VideoMetadataCache) Save(key, thumbnailDataURL string, width, height int, frameRate float64) (VideoMetadataCacheStats, error) {
+func (c *VideoMetadataCache) Save(key string, width, height int, frameRate float64) (VideoMetadataCacheStats, error) {
 	entry := videoMetadataCacheEntry{
-		ThumbnailDataURL: thumbnailDataURL,
-		Width:            width,
-		Height:           height,
-		FrameRate:        frameRate,
+		Width:     width,
+		Height:    height,
+		FrameRate: frameRate,
 	}
 	if err := validateVideoMetadataCacheEntry(entry); err != nil {
 		return VideoMetadataCacheStats{}, err
@@ -239,9 +235,6 @@ func (c *VideoMetadataCache) listFilesLocked() ([]videoMetadataFile, error) {
 }
 
 func validateVideoMetadataCacheEntry(entry videoMetadataCacheEntry) error {
-	if _, _, err := decodeThumbnailDataURL(entry.ThumbnailDataURL); err != nil {
-		return err
-	}
 	if entry.Width <= 0 || entry.Height <= 0 {
 		return errors.New("video metadata dimensions must be positive")
 	}

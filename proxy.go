@@ -206,7 +206,9 @@ func (p *WebDAVProxy) serveVideoSnapshot(w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "image/png")
+	mimeType := map[string]string{".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}[strings.ToLower(filepath.Ext(fileName))]
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("ETag", fmt.Sprintf(`"%x-%x"`, info.ModTime().UnixNano(), info.Size()))
 	w.Header().Set("Cache-Control", "private, no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeContent(w, r, fileName, info.ModTime(), file)

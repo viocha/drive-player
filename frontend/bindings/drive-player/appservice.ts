@@ -49,6 +49,10 @@ export function GetState(): $CancellablePromise<$models.AppState> {
     return $Call.ByID(800887515);
 }
 
+export function GetVideoCover(remotePath: string, modifiedAt: string): $CancellablePromise<string> {
+    return $Call.ByID(2289720240, remotePath, modifiedAt);
+}
+
 export function GetVideoMetadata(remotePath: string, modifiedAt: string): $CancellablePromise<$models.VideoMetadataResult> {
     return $Call.ByID(3706788176, remotePath, modifiedAt);
 }
@@ -81,8 +85,12 @@ export function SavePlaybackProgress(remotePath: string, position: number, durat
     return $Call.ByID(1818561021, remotePath, position, duration);
 }
 
-export function SaveVideoMetadata(remotePath: string, modifiedAt: string, thumbnailDataURL: string, width: number, height: number, frameRate: number): $CancellablePromise<$models.VideoMetadataCacheStats> {
-    return $Call.ByID(4077100431, remotePath, modifiedAt, thumbnailDataURL, width, height, frameRate);
+export function SaveVideoCover(remotePath: string, modifiedAt: string, dataURL: string): $CancellablePromise<$models.VideoSnapshotCacheStats> {
+    return $Call.ByID(2318225529, remotePath, modifiedAt, dataURL);
+}
+
+export function SaveVideoMetadata(remotePath: string, modifiedAt: string, width: number, height: number, frameRate: number): $CancellablePromise<$models.VideoMetadataCacheStats> {
+    return $Call.ByID(4077100431, remotePath, modifiedAt, width, height, frameRate);
 }
 
 export function SaveVideoSnapshot(remotePath: string, modifiedAt: string, position: number, dataURL: string): $CancellablePromise<$models.VideoSnapshotCacheStats> {
@@ -101,16 +109,20 @@ export function SetPlaybackProgressSettings(maxAgeDays: number, maxSizeMB: numbe
     return $Call.ByID(3472923853, maxAgeDays, maxSizeMB);
 }
 
-export function SetVideoMetadataSettings(maxAgeDays: number, maxSizeMB: number, offsetPercent: number): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(2562364601, maxAgeDays, maxSizeMB, offsetPercent);
+export function SetVideoMetadataSettings(maxAgeDays: number, maxSizeMB: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(2562364601, maxAgeDays, maxSizeMB);
 }
 
-export function SetVideoSnapshotSettings(maxAgeDays: number, maxSizeMB: number): $CancellablePromise<$models.AppState> {
-    return $Call.ByID(1769175436, maxAgeDays, maxSizeMB);
+export function SetVideoSnapshotSettings(maxAgeDays: number, maxSizeMB: number, offsetPercent: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(1769175436, maxAgeDays, maxSizeMB, offsetPercent);
 }
 
 export function SwitchWebDAVAccount(id: string): $CancellablePromise<$models.AppState> {
     return $Call.ByID(449919946, id);
+}
+
+export function TestWebDAVAccount(id: string): $CancellablePromise<void> {
+    return $Call.ByID(1172282674, id);
 }
 
 export function UpdateWebDAVAccount(id: string, name: string, endpoint: string, username: string, password: string): $CancellablePromise<$models.AppState> {

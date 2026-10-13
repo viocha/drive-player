@@ -50,7 +50,6 @@ export interface VideoMetadataCacheStats {
 
 export interface VideoMetadataResult {
     "found": boolean;
-    "thumbnailDataUrl": string;
     "width": number;
     "height": number;
     "frameRate": number;

@@ -10,20 +10,20 @@ tasks:
       - go mod tidy
 
   install:frontend:deps:
-    summary: 使用 pnpm 安装前端依赖
+    summary: 使用 bun 安装前端依赖
     internal: true
     run: once
     dir: frontend
     sources:
       - package.json
-      - pnpm-lock.yaml
+      - bun.lock
     generates:
       - node_modules/**/*
     preconditions:
-      - sh: pnpm --version
-        msg: "未找到 pnpm"
+      - sh: bun --version
+        msg: "未找到 bun"
     cmds:
-      - pnpm install
+      - bun install --frozen-lockfile
 
   generate:bindings:
     summary: 为前端生成 TypeScript 绑定
@@ -41,13 +41,13 @@ tasks:
       - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true{{if eq .OBFUSCATED "true"}} -obfuscated{{end}} -ts -i
 
   build:frontend:
-    summary: 使用 pnpm 构建前端
+    summary: 使用 bun 构建前端
     internal: true
     run: once
     dir: frontend
     sources:
       - package.json
-      - pnpm-lock.yaml
+      - bun.lock
       - tsconfig.json
       - vite.config.ts
       - index.html
@@ -65,7 +65,7 @@ tasks:
           OBFUSCATED:
             ref: .OBFUSCATED
     cmds:
-      - pnpm run {{if eq .DEV "true"}}build:dev{{else}}build{{end}}
+      - bun run {{if eq .DEV "true"}}build:dev{{else}}build{{end}}
     env:
       PRODUCTION: '{{if eq .DEV "true"}}false{{else}}true{{end}}'
 
@@ -75,4 +75,4 @@ tasks:
       - task: install:frontend:deps
     dir: frontend
     cmds:
-      - pnpm dev --port {{.VITE_PORT}} --strictPort
+      - bun run dev --port {{.VITE_PORT}} --strictPort

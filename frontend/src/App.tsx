@@ -1,17 +1,17 @@
 import { FormEvent, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import "@videojs/react/video/skin.css";
-import { createPlayer, videoFeatures } from "@videojs/react";
+import { createPlayer } from "@videojs/react";
 import { Video } from "@videojs/react/video";
 import {
   ArrowLeft,
   ArrowRight,
+  Activity,
   CircleAlert,
   Eye,
   EyeOff,
   Folder,
   FolderOpen,
-  HardDrive,
   LoaderCircle,
+  MoreHorizontal,
   Pencil,
   Play,
   Plus,
@@ -46,6 +46,7 @@ import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
   ContextMenuContent,
+  ContextMenuGroup,
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
@@ -65,6 +66,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -90,8 +93,31 @@ import { Toaster, toast } from "@/components/ui/toast";
 import { DRIVE_VIDEO_CONTROLS_ACTIVITY_EVENT, DriveVideoSkin } from "@/components/drive-video-skin";
 import { analyzeVideoMetadata, type VideoMediaMetadata } from "@/lib/video-metadata";
 import { cn } from "@/lib/utils";
+import { reconcileDirectoryEntries } from "@/lib/directory-refresh";
+import { driveVideoFeatures } from "@/lib/video-features";
+import { VIDEO_SEEK_COMPLETE_EVENT, videoSeekControllers } from "@/lib/video-seeking";
 
-const Player = createPlayer({ features: videoFeatures });
+const { Player } = createPlayer({ features: driveVideoFeatures });
+
+function AccountActionsMenu({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
+  const pendingAction = useRef<(() => void) | null>(null);
+  return (
+    <DropdownMenu onOpenChangeComplete={(open) => {
+      if (open) return;
+      const action = pendingAction.current;
+      pendingAction.current = null;
+      action?.();
+    }}>
+      <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label="账户操作"><MoreHorizontal /></Button>} />
+      <DropdownMenuContent align="end">
+        <DropdownMenuGroup>
+          <DropdownMenuItem onClick={() => { pendingAction.current = onEdit; }}><Pencil />编辑</DropdownMenuItem>
+          <DropdownMenuItem variant="destructive" onClick={() => { pendingAction.current = onDelete; }}><Trash2 />删除</DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 const GESTURE_ACTIVATION_DISTANCE = 8;
 const GESTURE_SEEK_DISTANCE_PX = 1;
 
@@ -115,12 +141,11 @@ const VIDEO_EXTENSIONS = new Set([
 ]);
 
 const THUMBNAIL_MAX_WIDTH = 320;
-const VIDEO_METADATA_CONCURRENCY = 2;
+const VIDEO_METADATA_CONCURRENCY = 1;
 const DIRECTORY_CACHE_SETTINGS_KEY = "drive-player.directory-cache-settings";
 const LAST_DIRECTORY_PATH_KEY_PREFIX = "drive-player.last-directory-path.";
-const DEFAULT_DIRECTORY_CACHE_TTL_MINUTES = 30;
-const LEGACY_DEFAULT_DIRECTORY_CACHE_TTL_MINUTES = 5;
-const DEFAULT_DIRECTORY_CACHE_MAX_SIZE_MB = 32;
+const DEFAULT_DIRECTORY_CACHE_TTL_MINUTES = 60;
+const DEFAULT_DIRECTORY_CACHE_MAX_SIZE_MB = 16;
 const DIRECTORY_SCROLL_POSITION_CACHE_LIMIT = 1000;
 const DIRECTORY_HISTORY_LIMIT = 1000;
 const MIN_DIRECTORY_CACHE_TTL_MINUTES = 1;
@@ -227,17 +252,6 @@ function loadDirectoryCacheSettings(): DirectoryCacheSettings {
         maxSizeMB >= MIN_DIRECTORY_CACHE_MAX_SIZE_MB &&
         maxSizeMB <= MAX_DIRECTORY_CACHE_MAX_SIZE_MB
       ) {
-        if (
-          ttlMinutes === LEGACY_DEFAULT_DIRECTORY_CACHE_TTL_MINUTES &&
-          maxSizeMB === DEFAULT_DIRECTORY_CACHE_MAX_SIZE_MB
-        ) {
-          const migrated = {
-            ttlMinutes: DEFAULT_DIRECTORY_CACHE_TTL_MINUTES,
-            maxSizeMB: DEFAULT_DIRECTORY_CACHE_MAX_SIZE_MB,
-          };
-          window.localStorage.setItem(DIRECTORY_CACHE_SETTINGS_KEY, JSON.stringify(migrated));
-          return migrated;
-        }
         return { ttlMinutes, maxSizeMB };
       }
     }
@@ -343,7 +357,7 @@ function VideoSnapshotPane({
   const extractionComplete = plannedCount > 0 && completedCount >= plannedCount;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b p-3">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border p-3">
         <div className="min-w-0">
           <div className="text-sm font-medium">时间点截图</div>
           {(loading || extracting || snapshots.length > 0) && (
@@ -369,17 +383,11 @@ function VideoSnapshotPane({
         )}
       </div>
 
-      <ScrollArea className="min-h-0 flex-1">
+      <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-content]]:flex [&_[data-slot=scroll-area-content]]:flex-col">
         {snapshots.length === 0 ? (
-          <div className="flex min-h-28 items-center justify-center px-4 text-center text-xs text-muted-foreground">
-            {loading
-              ? "正在读取缓存…"
-              : extracting
-                ? "截图会在提取完成一张后立即显示"
-                : plannedCount > 0
-                  ? "点击“提取截图”开始"
-                  : "正在读取视频时长…"}
-          </div>
+          <Empty className="min-h-0 flex-1">
+            <EmptyDescription>暂无截图</EmptyDescription>
+          </Empty>
         ) : (
           <div className={`grid gap-2 p-2 ${twoColumns ? "grid-cols-2" : "grid-cols-1"}`}>
             {snapshots.map((snapshot) => (
@@ -457,7 +465,7 @@ function VideoListPane({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b p-3">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border p-3">
         <div className="text-sm font-medium">同目录视频</div>
         <div className="shrink-0 text-xs text-muted-foreground">共 {videos.length} 个视频</div>
       </div>
@@ -538,7 +546,7 @@ function VideoPlayerSidebar({
         onValueChange={(value) => onTabChange(value as PlayerSidebarTab)}
         className="min-h-0 flex-1 gap-0 overflow-hidden"
       >
-        <div className="flex shrink-0 items-center gap-2 border-b p-2">
+        <div className="flex shrink-0 items-center gap-2 border-b border-border p-2">
           <TabsList className="grid min-w-0 flex-1 grid-cols-2">
             <TabsTrigger value="snapshots">时间点截图</TabsTrigger>
             <TabsTrigger value="videos">视频列表</TabsTrigger>
@@ -780,7 +788,7 @@ function VideoPlayer({
   const jumpToVideoSnapshot = useCallback((position: number) => {
     const video = videoRef.current;
     if (!video || !Number.isFinite(position)) return;
-    video.currentTime = Math.max(0, Math.min(position, Number.isFinite(video.duration) ? video.duration : position));
+    void videoSeekControllers.get(video)?.seek(position);
   }, []);
 
   const setAndroidFullscreen = useCallback((fullscreen: boolean) => {
@@ -977,6 +985,19 @@ function VideoPlayer({
     onPersistProgress(remotePathRef.current, position, duration);
   }, [onPersistProgress]);
 
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onComplete = () => {
+      if (hudGestureDraggingRef.current || hudSliderDraggingRef.current) return;
+      hudSeekPendingRef.current = false;
+      setHUDProgress({ position: video.currentTime, duration: video.duration });
+      persistProgress(video);
+    };
+    video.addEventListener(VIDEO_SEEK_COMPLETE_EVENT, onComplete);
+    return () => video.removeEventListener(VIDEO_SEEK_COMPLETE_EVENT, onComplete);
+  }, [persistProgress]);
+
   const selectDirectoryVideo = useCallback(async (entry: FileEntry) => {
     if (entry.path === remotePath || switchingVideoPath !== null) return;
     const currentVideo = videoRef.current;
@@ -993,11 +1014,13 @@ function VideoPlayer({
   }, [onSelectVideo, persistProgress, remotePath, switchingVideoPath]);
 
   const syncHUDWithTimeSlider = useCallback((progress: { position: number; duration: number; dragging: boolean }) => {
-    if (!fullscreenHUDVisible) return;
+    const controller = videoRef.current && videoSeekControllers.get(videoRef.current);
     if (progress.dragging) {
+      controller?.beginScrub();
+      controller?.preview(progress.position);
       hudSliderDraggingRef.current = true;
       hudSeekPendingRef.current = true;
-      setHUDProgress({ position: progress.position, duration: progress.duration });
+      if (fullscreenHUDVisible) setHUDProgress({ position: progress.position, duration: progress.duration });
       return;
     }
     if (hudSliderDraggingRef.current) {
@@ -1005,13 +1028,14 @@ function VideoPlayer({
       // Keep the final slider target visible until the media confirms the seek.
       // Otherwise an old timeupdate can make the HUD jump backwards while data loads.
       hudSeekPendingRef.current = true;
+      controller?.endScrub();
     }
   }, [fullscreenHUDVisible]);
 
   useEffect(() => {
     const miniProgress = miniProgressRef.current;
-    const playerRoot = miniProgress?.closest(".media-default-skin");
-    const timeSlider = playerRoot?.querySelector<HTMLElement>(".media-time-controls .media-slider");
+    const playerRoot = miniProgress?.closest(".drive-video-skin");
+    const timeSlider = playerRoot?.querySelector<HTMLElement>(".media-time-slider");
     if (!miniProgress || !timeSlider) return;
 
     const syncProgressUI = () => {
@@ -1060,7 +1084,7 @@ function VideoPlayer({
     };
 
     const resetVisibleControlsAutoHide = () => {
-      root.querySelector<HTMLElement>(".media-default-skin")
+      root.closest<HTMLElement>(".drive-video-skin")
         ?.dispatchEvent(new Event(DRIVE_VIDEO_CONTROLS_ACTIVITY_EVENT));
     };
 
@@ -1186,7 +1210,7 @@ function VideoPlayer({
         startX: event.clientX,
         startY: event.clientY,
         startBrightness,
-        targetTime: video.currentTime,
+        targetTime: videoSeekControllers.get(video)?.position ?? video.currentTime,
         lastSeekX: event.clientX,
         side,
         rect,
@@ -1230,6 +1254,7 @@ function VideoPlayer({
       if (current.mode === "pending") {
         if (absX >= GESTURE_ACTIVATION_DISTANCE && absX > absY * 1.05) {
           current.mode = "seek";
+          videoSeekControllers.get(video)?.beginScrub();
           current.lastSeekX = event.clientX;
           hudGestureDraggingRef.current = true;
           hideGestureFeedback();
@@ -1261,18 +1286,18 @@ function VideoPlayer({
       const duration = video.duration;
       if (!Number.isFinite(duration) || duration <= 0) return;
       const pendingSeekDX = event.clientX - current.lastSeekX;
-      current.targetTime = Math.max(
-        0,
-        Math.min(duration, video.currentTime + (pendingSeekDX / current.viewportWidth) * duration),
-      );
       // 只按累计滑动距离触发 seek，避免刷新率、停留时间或原地抖动改变进度。
       if (Math.abs(pendingSeekDX) >= GESTURE_SEEK_DISTANCE_PX) {
+        current.targetTime = Math.max(
+          0,
+          Math.min(duration, current.targetTime + (pendingSeekDX / current.viewportWidth) * duration),
+        );
         current.lastSeekX = event.clientX;
         hudSeekPendingRef.current = true;
         if (fullscreenHUDVisible) {
           setHUDProgress({ position: current.targetTime, duration });
         }
-        video.currentTime = current.targetTime;
+        videoSeekControllers.get(video)?.preview(current.targetTime);
         resetVisibleControlsAutoHide();
       }
     };
@@ -1315,8 +1340,9 @@ function VideoPlayer({
       if (current.mode === "seek") {
         const video = videoRef.current;
         hudGestureDraggingRef.current = false;
+        if (video) videoSeekControllers.get(video)?.endScrub();
         suppressPlayerGestureClickUntil = performance.now() + 600;
-        if (video?.seeking) {
+        if (video && videoSeekControllers.get(video)?.pending) {
           hudSeekPendingRef.current = true;
         } else if (video) {
           hudSeekPendingRef.current = false;
@@ -1404,6 +1430,8 @@ function VideoPlayer({
 
     return () => {
       resetLongPress(true);
+      const video = videoRef.current;
+      if (video && gesture.current?.mode === "seek") videoSeekControllers.get(video)?.endScrub();
       gesture.current = null;
       hudGestureDraggingRef.current = false;
       hudSeekPendingRef.current = false;
@@ -1427,7 +1455,7 @@ function VideoPlayer({
         ref={frameRef}
         className={`video-player-frame${isAndroid ? " video-player-frame--android" : ""}${nativeFullscreen ? " video-player-frame--fullscreen" : ""}`}
       >
-        <Player.Provider>
+        <Player>
           <DriveVideoSkin
             nativeFullscreen={isAndroid ? { active: nativeFullscreen, onToggle: toggleAndroidFullscreen } : undefined}
             mobile={isMobile}
@@ -1482,8 +1510,9 @@ function VideoPlayer({
             onTimeUpdate={(event) => {
               if (
                 hudSeekPendingRef.current
-                && !event.currentTarget.seeking
+                && !(videoSeekControllers.get(event.currentTarget)?.pending ?? event.currentTarget.seeking)
                 && !hudSliderDraggingRef.current
+                && !hudGestureDraggingRef.current
               ) {
                 hudSeekPendingRef.current = false;
               }
@@ -1496,9 +1525,10 @@ function VideoPlayer({
             }}
             onSeeked={(event) => {
               if (hudSliderDraggingRef.current) return;
-              if (hudGestureDraggingRef.current) {
-                hudSeekPendingRef.current = false;
-                setHUDProgress({ position: event.currentTarget.currentTime, duration: event.currentTarget.duration });
+              const controller = videoSeekControllers.get(event.currentTarget);
+              if (hudGestureDraggingRef.current || controller?.pending) {
+                hudSeekPendingRef.current = true;
+                setHUDProgress({ position: controller?.position ?? event.currentTarget.currentTime, duration: event.currentTarget.duration });
                 return;
               }
               hudSliderDraggingRef.current = false;
@@ -1542,7 +1572,7 @@ function VideoPlayer({
             </div>
           )}
           </DriveVideoSkin>
-        </Player.Provider>
+        </Player>
       </div>
 
       <VideoPlayerSidebar
@@ -1889,10 +1919,7 @@ function EmptyAccountView({
     <main className="login-shell">
       <Card className="w-full max-w-md shadow-xl shadow-black/5">
         <CardHeader className="space-y-4">
-          <div className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <HardDrive className="size-6" />
-          </div>
-          <CardTitle className="text-2xl">添加 WebDAV</CardTitle>
+          <CardTitle className="text-2xl">添加账户</CardTitle>
         </CardHeader>
         <form onSubmit={submit} className="flex flex-col gap-(--card-spacing)">
           <CardContent className="space-y-4">
@@ -2002,7 +2029,7 @@ function WebDAVAccountDialog({
     >
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{account ? "编辑 WebDAV" : "添加 WebDAV"}</DialogTitle>
+          <DialogTitle>{account ? "编辑 WebDAV" : "添加账户"}</DialogTitle>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">
           {error && (
@@ -2067,14 +2094,18 @@ function WebDAVAccountDialog({
               </Button>
             </div>
           </div>
-          <Button
-            className="w-full"
-            type="submit"
-            disabled={submitting || !name.trim() || !endpoint.trim()}
-          >
-            {submitting && <LoaderCircle className="animate-spin" />}
-            保存
-          </Button>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              取消
+            </Button>
+            <Button
+              type="submit"
+              disabled={submitting || !name.trim() || !endpoint.trim()}
+            >
+              {submitting && <LoaderCircle className="animate-spin" />}
+              保存
+            </Button>
+          </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
@@ -2093,10 +2124,17 @@ function App() {
   const [restoringSession, setRestoringSession] = useState(true);
   const [showInitialLoading, setShowInitialLoading] = useState(false);
   const [entries, setEntries] = useState<FileEntry[]>([]);
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
   const [thumbnailImages, setThumbnailImages] = useState<Record<string, string>>({});
   const [videoMetadataByPath, setVideoMetadataByPath] = useState<Record<string, VideoMediaMetadata>>({});
+  const thumbnailImagesRef = useRef(thumbnailImages);
+  const videoMetadataByPathRef = useRef(videoMetadataByPath);
+  thumbnailImagesRef.current = thumbnailImages;
+  videoMetadataByPathRef.current = videoMetadataByPath;
   const [videoMetadataStats, setVideoMetadataStats] = useState<VideoMetadataCacheStats>({ count: 0, totalBytes: 0 });
   const [refreshingVideoMetadataPaths, setRefreshingVideoMetadataPaths] = useState<Set<string>>(() => new Set());
+  const [refreshingVideoCoverPaths, setRefreshingVideoCoverPaths] = useState<Set<string>>(() => new Set());
   const [videoSnapshotStats, setVideoSnapshotStats] = useState<VideoSnapshotCacheStats>({ count: 0, totalBytes: 0 });
   const [playbackProgressStats, setPlaybackProgressStats] = useState<PlaybackProgressStats>({ count: 0, totalBytes: 0 });
   const [providerBrowseStats, setAccountBrowseStats] = useState<Record<WebDAVAccountID, AccountBrowseStats>>({});
@@ -2106,6 +2144,7 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [accountDialogOpen, setAccountDialogOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<WebDAVAccountState | null>(null);
+  const [testingAccountIDs, setTestingAccountIDs] = useState<Set<string>>(() => new Set());
   const [accountPendingDelete, setAccountPendingDelete] = useState<WebDAVAccountState | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [activeVideo, setActiveVideo] = useState<ActiveVideo | null>(null);
@@ -2127,10 +2166,10 @@ function App() {
   const [directoryCacheTTLInput, setDirectoryCacheTTLInput] = useState(String(directoryCacheSettings.ttlMinutes));
   const [directoryCacheMaxSizeInput, setDirectoryCacheMaxSizeInput] = useState(String(directoryCacheSettings.maxSizeMB));
   const [videoMetadataMaxAgeInput, setVideoMetadataMaxAgeInput] = useState("30");
-  const [videoMetadataMaxSizeInput, setVideoMetadataMaxSizeInput] = useState("512");
+  const [videoMetadataMaxSizeInput, setVideoMetadataMaxSizeInput] = useState("16");
   const [videoMetadataThumbnailOffsetPercentInput, setVideoMetadataThumbnailOffsetPercentInput] = useState("10");
   const [videoSnapshotMaxAgeInput, setVideoSnapshotMaxAgeInput] = useState("30");
-  const [videoSnapshotMaxSizeInput, setVideoSnapshotMaxSizeInput] = useState("1024");
+  const [videoSnapshotMaxSizeInput, setVideoSnapshotMaxSizeInput] = useState("512");
   const [playbackMaxAgeInput, setPlaybackMaxAgeInput] = useState("365");
   const [playbackMaxSizeInput, setPlaybackMaxSizeInput] = useState("16");
   const [mobileLongPressRateInput, setMobileLongPressRateInput] = useState("3");
@@ -2306,19 +2345,12 @@ function App() {
     const playbackURL = await AppService.GetPlaybackURL(entry.path);
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-    const [thumbnail, analyzedMetadata] = await Promise.all([
-      captureVideoThumbnail(
-        playbackURL,
-        state?.videoMetadataThumbnailOffsetPercent ?? 10,
-        signal,
-      ),
-      analyzeVideoMetadata(playbackURL, entry.size, signal),
-    ]);
+    const analyzedMetadata = await analyzeVideoMetadata(playbackURL, entry.size, signal);
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
     const mediaMetadata: VideoMediaMetadata = {
-      width: analyzedMetadata.width || thumbnail.width,
-      height: analyzedMetadata.height || thumbnail.height,
+      width: analyzedMetadata.width,
+      height: analyzedMetadata.height,
       frameRate: analyzedMetadata.frameRate,
     };
     if (!hasCompleteVideoMediaMetadata(mediaMetadata)) {
@@ -2328,14 +2360,22 @@ function App() {
     await AppService.SaveVideoMetadata(
       entry.path,
       entry.modifiedAt,
-      thumbnail.dataUrl,
       mediaMetadata.width,
       mediaMetadata.height,
       mediaMetadata.frameRate,
     );
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-    return { thumbnailDataURL: thumbnail.dataUrl, mediaMetadata };
+    return mediaMetadata;
+  }, []);
+
+  const generateAndCacheVideoCover = useCallback(async (entry: FileEntry, signal: AbortSignal) => {
+    const playbackURL = await AppService.GetPlaybackURL(entry.path);
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    const thumbnail = await captureVideoThumbnail(playbackURL, state?.videoMetadataThumbnailOffsetPercent ?? 10, signal);
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    await AppService.SaveVideoCover(entry.path, entry.modifiedAt, thumbnail.dataUrl);
+    return thumbnail.dataUrl;
   }, [state?.videoMetadataThumbnailOffsetPercent]);
 
   const startThumbnailLoading = useCallback((sourceEntries: FileEntry[], requestId: number) => {
@@ -2353,23 +2393,33 @@ function App() {
           if (index >= videos.length) return;
           const entry = videos[index];
           try {
-            const cached = await AppService.GetVideoMetadata(entry.path, entry.modifiedAt);
+            const [cached, cover] = await Promise.all([
+              AppService.GetVideoMetadata(entry.path, entry.modifiedAt),
+              AppService.GetVideoCover(entry.path, entry.modifiedAt),
+            ]);
             if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
-            if (cached.found && cached.thumbnailDataUrl) {
+            if (cached.found) {
               const mediaMetadata: VideoMediaMetadata = {
                 width: cached.width,
                 height: cached.height,
                 frameRate: cached.frameRate,
               };
-              setThumbnailImages((current) => ({ ...current, [entry.path]: cached.thumbnailDataUrl }));
               setVideoMetadataByPath((current) => ({ ...current, [entry.path]: mediaMetadata }));
-              continue;
             }
-
-            const generated = await generateAndCacheVideoMetadata(entry, controller.signal);
-            if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
-            setThumbnailImages((current) => ({ ...current, [entry.path]: generated.thumbnailDataURL }));
-            setVideoMetadataByPath((current) => ({ ...current, [entry.path]: generated.mediaMetadata }));
+            if (cover) setThumbnailImages((current) => ({ ...current, [entry.path]: cover }));
+            // 两类数据独立缺失、独立生成；其中一类失败不阻止另一类展示。
+            await Promise.allSettled([
+              !cached.found ? generateAndCacheVideoMetadata(entry, controller.signal).then((metadata) => {
+                if (!controller.signal.aborted && requestId === directoryRequestId.current) {
+                  setVideoMetadataByPath((current) => ({ ...current, [entry.path]: metadata }));
+                }
+              }) : Promise.resolve(),
+              !cover ? generateAndCacheVideoCover(entry, controller.signal).then((image) => {
+                if (!controller.signal.aborted && requestId === directoryRequestId.current) {
+                  setThumbnailImages((current) => ({ ...current, [entry.path]: image }));
+                }
+              }) : Promise.resolve(),
+            ]);
           } catch (err) {
             if (controller.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
             // A codec, seek, or metadata failure for one video should not block the directory or other video metadata jobs.
@@ -2380,7 +2430,7 @@ function App() {
       const workerCount = Math.min(VIDEO_METADATA_CONCURRENCY, videos.length);
       await Promise.all(Array.from({ length: workerCount }, () => worker()));
     })();
-  }, [generateAndCacheVideoMetadata]);
+  }, [generateAndCacheVideoMetadata, generateAndCacheVideoCover]);
 
   const refreshVideoMetadata = useCallback(async (entry: FileEntry) => {
     if (!isVideo(entry) || refreshingVideoMetadataPaths.has(entry.path)) return;
@@ -2396,12 +2446,11 @@ function App() {
     try {
       const generated = await generateAndCacheVideoMetadata(entry, controller.signal);
       if (requestId === directoryRequestId.current) {
-        setThumbnailImages((current) => ({ ...current, [entry.path]: generated.thumbnailDataURL }));
-        setVideoMetadataByPath((current) => ({ ...current, [entry.path]: generated.mediaMetadata }));
+        setVideoMetadataByPath((current) => ({ ...current, [entry.path]: generated }));
       }
     } catch (err) {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
-        toast.add({ title: "重新获取元信息失败", description: errorMessage(err), type: "error" });
+        toast.add({ title: "刷新元信息失败", description: errorMessage(err), type: "error" });
       }
     } finally {
       setRefreshingVideoMetadataPaths((current) => {
@@ -2412,8 +2461,30 @@ function App() {
     }
   }, [generateAndCacheVideoMetadata, refreshingVideoMetadataPaths]);
 
+  const refreshVideoCover = useCallback(async (entry: FileEntry) => {
+    if (!isVideo(entry) || refreshingVideoCoverPaths.has(entry.path)) return;
+    setRefreshingVideoCoverPaths((current) => new Set(current).add(entry.path));
+    const requestId = directoryRequestId.current;
+    const controller = new AbortController();
+    try {
+      const image = await generateAndCacheVideoCover(entry, controller.signal);
+      if (requestId === directoryRequestId.current) {
+        setThumbnailImages((current) => ({ ...current, [entry.path]: image }));
+      }
+    } catch (err) {
+      toast.add({ title: "刷新封面失败", description: errorMessage(err), type: "error" });
+    } finally {
+      setRefreshingVideoCoverPaths((current) => {
+        const next = new Set(current);
+        next.delete(entry.path);
+        return next;
+      });
+    }
+  }, [generateAndCacheVideoCover, refreshingVideoCoverPaths]);
+
   const loadDirectory = useCallback(async (targetPath: string, forceRefresh = false) => {
     const normalized = normalizePath(targetPath);
+    const refreshingSameDirectory = forceRefresh && normalized === currentPathRef.current;
     const requestId = ++directoryRequestId.current;
     const viewport = directoryScrollViewportRef.current;
     if (viewport) {
@@ -2450,9 +2521,11 @@ function App() {
     if (requestId !== directoryRequestId.current || controller.signal.aborted) return;
     currentPathRef.current = normalized;
     setCurrentPath(normalized);
-    setEntries([]);
-    setThumbnailImages({});
-    setVideoMetadataByPath({});
+    if (!refreshingSameDirectory) {
+      setEntries([]);
+      setThumbnailImages({});
+      setVideoMetadataByPath({});
+    }
     setLoading(true);
     const request = AppService.ListDirectory(normalized);
     directoryRequest.current = request;
@@ -2463,13 +2536,29 @@ function App() {
       cacheDirectory(normalized, result);
       rememberActiveBrowsePath(normalized);
       const visibleEntries = result.filter((entry) => entry.isDirectory || isVideo(entry));
-      pendingDirectoryScrollRestore.current = {
-        path: normalized,
-        scrollTop: getDirectoryScrollPosition(normalized),
-      };
-      setEntries(visibleEntries);
+      let mediaEntries = visibleEntries;
+      if (refreshingSameDirectory) {
+        const updated = reconcileDirectoryEntries(entriesRef.current, visibleEntries);
+        const retainedPaths = new Set(visibleEntries.filter((entry) => !updated.changedMediaPaths.has(entry.path)).map((entry) => entry.path));
+        const keepMedia = <T,>(current: Record<string, T>) => {
+          const retained = Object.entries(current).filter(([path]) => retainedPaths.has(path));
+          return retained.length === Object.keys(current).length ? current : Object.fromEntries(retained);
+        };
+        setEntries(updated.entries);
+        setThumbnailImages(keepMedia);
+        setVideoMetadataByPath(keepMedia);
+        mediaEntries = visibleEntries.filter((entry) => updated.changedMediaPaths.has(entry.path)
+          || !thumbnailImagesRef.current[entry.path]
+          || !hasCompleteVideoMediaMetadata(videoMetadataByPathRef.current[entry.path]));
+      } else {
+        pendingDirectoryScrollRestore.current = {
+          path: normalized,
+          scrollTop: getDirectoryScrollPosition(normalized),
+        };
+        setEntries(visibleEntries);
+      }
       setLoading(false);
-      startThumbnailLoading(visibleEntries, requestId);
+      startThumbnailLoading(mediaEntries, requestId);
     } catch (err) {
       if (requestId !== directoryRequestId.current || controller.signal.aborted) return;
       setError(errorMessage(err));
@@ -2693,6 +2782,22 @@ function App() {
     refreshAccountBrowseStats();
   };
 
+  const testWebDAVAccount = async (account: WebDAVAccountState) => {
+    setTestingAccountIDs((current) => new Set(current).add(account.id));
+    try {
+      await AppService.TestWebDAVAccount(account.id);
+      toast.add({ title: `${account.name}：连接正常`, type: "success" });
+    } catch (err) {
+      toast.add({ title: `${account.name}：连接失败`, description: errorMessage(err), type: "error" });
+    } finally {
+      setTestingAccountIDs((current) => {
+        const next = new Set(current);
+        next.delete(account.id);
+        return next;
+      });
+    }
+  };
+
   const switchWebDAVAccount = async (provider: WebDAVAccountID) => {
     if (!state || state.activeAccountId === provider) return;
 
@@ -2849,23 +2954,15 @@ function App() {
   const saveVideoMetadataSettings = async () => {
     const maxAgeDays = Number.parseInt(videoMetadataMaxAgeInput, 10);
     const maxSizeMB = Number.parseInt(videoMetadataMaxSizeInput, 10);
-    const offsetPercent = Number.parseInt(videoMetadataThumbnailOffsetPercentInput, 10);
-    if (![maxAgeDays, maxSizeMB, offsetPercent].every(Number.isFinite)) {
+    if (![maxAgeDays, maxSizeMB].every(Number.isFinite)) {
       toast.add({ title: "设置无效", description: "请输入有效的视频元信息缓存设置", type: "error" });
       return;
     }
     try {
-      const previousOffset = state?.videoMetadataThumbnailOffsetPercent;
-      const nextState = await AppService.SetVideoMetadataSettings(maxAgeDays, maxSizeMB, offsetPercent);
+      const nextState = await AppService.SetVideoMetadataSettings(maxAgeDays, maxSizeMB);
       setState(nextState);
       setVideoMetadataMaxAgeInput(String(nextState.videoMetadataMaxAgeDays));
       setVideoMetadataMaxSizeInput(String(nextState.videoMetadataMaxSizeMB));
-      setVideoMetadataThumbnailOffsetPercentInput(String(nextState.videoMetadataThumbnailOffsetPercent));
-      if (previousOffset !== nextState.videoMetadataThumbnailOffsetPercent) {
-        setThumbnailImages({});
-        setVideoMetadataByPath({});
-        videoMetadataReloadNeeded.current = true;
-      }
       await refreshVideoMetadataStats();
     } catch (err) {
       toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
@@ -2875,8 +2972,8 @@ function App() {
   const clearVideoMetadataCache = async () => {
     try {
       setVideoMetadataStats(await AppService.ClearVideoMetadataCache());
-      setThumbnailImages({});
       setVideoMetadataByPath({});
+      for (const session of Object.values(accountBrowseSessions.current)) session.videoMetadataByPath = {};
       videoMetadataReloadNeeded.current = true;
     } catch (err) {
       toast.add({ title: "清空失败", description: errorMessage(err), type: "error" });
@@ -2887,17 +2984,28 @@ function App() {
     if (!state) return;
     const maxAgeDays = Number.parseInt(videoSnapshotMaxAgeInput, 10);
     const maxSizeMB = Number.parseInt(videoSnapshotMaxSizeInput, 10);
+    const offsetPercent = Number.parseInt(videoMetadataThumbnailOffsetPercentInput, 10);
+    if (!Number.isInteger(offsetPercent) || offsetPercent < 0 || offsetPercent > 100) {
+      toast.add({ title: "设置无效", description: "封面截帧位置必须在 0% 到 100% 之间", type: "error" });
+      return;
+    }
     if (!Number.isInteger(maxAgeDays) || maxAgeDays < 1 || maxAgeDays > 3650) {
-      toast.add({ title: "设置无效", description: "视频截图保留时间必须在 1 到 3650 天之间", type: "error" });
+      toast.add({ title: "设置无效", description: "视频关键帧保留时间必须在 1 到 3650 天之间", type: "error" });
       return;
     }
     if (!Number.isInteger(maxSizeMB) || maxSizeMB < 64 || maxSizeMB > 10240) {
-      toast.add({ title: "设置无效", description: "视频截图缓存上限必须在 64 到 10240 MB 之间", type: "error" });
+      toast.add({ title: "设置无效", description: "视频关键帧缓存上限必须在 64 到 10240 MB 之间", type: "error" });
       return;
     }
     try {
-      const nextState = await AppService.SetVideoSnapshotSettings(maxAgeDays, maxSizeMB);
+      const previousOffset = state.videoMetadataThumbnailOffsetPercent;
+      const nextState = await AppService.SetVideoSnapshotSettings(maxAgeDays, maxSizeMB, offsetPercent);
       syncBackendState(nextState);
+      if (previousOffset !== offsetPercent) {
+        setThumbnailImages({});
+        for (const session of Object.values(accountBrowseSessions.current)) session.thumbnailImages = {};
+        videoMetadataReloadNeeded.current = true;
+      }
       await refreshVideoSnapshotStats();
     } catch (err) {
       toast.add({ title: "保存失败", description: errorMessage(err), type: "error" });
@@ -2907,6 +3015,9 @@ function App() {
   const clearVideoSnapshotCache = async () => {
     try {
       setVideoSnapshotStats(await AppService.ClearVideoSnapshotCache());
+      setThumbnailImages({});
+      for (const session of Object.values(accountBrowseSessions.current)) session.thumbnailImages = {};
+      videoMetadataReloadNeeded.current = true;
     } catch (err) {
       toast.add({ title: "清空失败", description: errorMessage(err), type: "error" });
     }
@@ -3064,11 +3175,11 @@ function App() {
     Number.parseInt(directoryCacheMaxSizeInput, 10) !== directoryCacheSettings.maxSizeMB;
   const videoMetadataSettingsChanged =
     Number.parseInt(videoMetadataMaxAgeInput, 10) !== state.videoMetadataMaxAgeDays ||
-    Number.parseInt(videoMetadataMaxSizeInput, 10) !== state.videoMetadataMaxSizeMB ||
-    Number.parseInt(videoMetadataThumbnailOffsetPercentInput, 10) !== state.videoMetadataThumbnailOffsetPercent;
+    Number.parseInt(videoMetadataMaxSizeInput, 10) !== state.videoMetadataMaxSizeMB;
   const videoSnapshotSettingsChanged =
     Number.parseInt(videoSnapshotMaxAgeInput, 10) !== state.videoSnapshotMaxAgeDays ||
-    Number.parseInt(videoSnapshotMaxSizeInput, 10) !== state.videoSnapshotMaxSizeMB;
+    Number.parseInt(videoSnapshotMaxSizeInput, 10) !== state.videoSnapshotMaxSizeMB ||
+    Number.parseInt(videoMetadataThumbnailOffsetPercentInput, 10) !== state.videoMetadataThumbnailOffsetPercent;
   const playbackProgressSettingsChanged =
     Number.parseInt(playbackMaxAgeInput, 10) !== state.playbackMaxAgeDays ||
     Number.parseInt(playbackMaxSizeInput, 10) !== state.playbackMaxSizeMB;
@@ -3081,9 +3192,6 @@ function App() {
     <div className="app-shell">
       <header className="app-header">
         <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <HardDrive className="size-5" />
-          </div>
           <div className="truncate font-semibold">Drive Player</div>
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-2">
@@ -3160,6 +3268,7 @@ function App() {
                     variant="outline"
                     size="icon"
                     onClick={() => void loadDirectory(currentPath, true)}
+                    disabled={loading}
                     aria-label="刷新目录"
                   >
                     <RefreshCw className={loading ? "animate-spin" : ""} />
@@ -3210,13 +3319,15 @@ function App() {
                   <Table className="table-fixed">
                     <colgroup>
                       <col />
-                      <col className="w-72" />
+                      {directoryVideos.length > 0 && <col className="w-28" />}
+                      {directoryVideos.length > 0 && <col className="w-44" />}
                       <col className="w-48" />
                     </colgroup>
                     <TableHeader>
                       <TableRow className="hover:bg-transparent">
                         <TableHead className="px-3 sm:px-4">名称</TableHead>
-                        <TableHead className="px-3 sm:px-4">大小</TableHead>
+                        {directoryVideos.length > 0 && <TableHead className="px-3 sm:px-4">大小</TableHead>}
+                        {directoryVideos.length > 0 && <TableHead className="px-3 sm:px-4">视频信息</TableHead>}
                         <TableHead className="px-3 sm:px-4">修改时间</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -3226,17 +3337,19 @@ function App() {
                   <Table className="table-fixed">
                     <colgroup>
                       <col />
-                      {!isMobile && <col className="w-72" />}
+                      {!isMobile && directoryVideos.length > 0 && <col className="w-28" />}
+                      {!isMobile && directoryVideos.length > 0 && <col className="w-44" />}
                       {!isMobile && <col className="w-48" />}
                     </colgroup>
                     <TableBody>
-                      {!loading && visibleEntries.map((entry) => {
+                      {visibleEntries.map((entry) => {
                           const mediaMetadata = videoMetadataByPath[entry.path];
                           const thumbnailDataURL = thumbnailImages[entry.path];
                           const thumbnailResultReady = Boolean(
-                            thumbnailDataURL && hasCompleteVideoMediaMetadata(mediaMetadata),
+                            hasCompleteVideoMediaMetadata(mediaMetadata),
                           );
                           const refreshingMetadata = !entry.isDirectory && refreshingVideoMetadataPaths.has(entry.path);
+                          const refreshingCover = !entry.isDirectory && refreshingVideoCoverPaths.has(entry.path);
                           const row = (
                             <TableRow
                               className="cursor-pointer active:bg-muted/70 data-pressed:bg-muted/70"
@@ -3245,12 +3358,12 @@ function App() {
                                 void openEntry(entry);
                               }}
                             >
-                              <TableCell className="px-3 py-2 sm:px-4">
+                              <TableCell colSpan={!isMobile && entry.isDirectory && directoryVideos.length > 0 ? 3 : 1} className="px-3 py-2 sm:px-4">
                                 <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-                                  <div className="relative flex h-12 w-20 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted sm:h-14 sm:w-24">
+                                  <div className={cn("relative flex shrink-0 items-center justify-center overflow-hidden rounded-md", entry.isDirectory ? "size-6" : "h-12 w-20 bg-muted sm:h-14 sm:w-24")}>
                                     {entry.isDirectory ? (
-                                      <Folder className="size-8" />
-                                    ) : thumbnailResultReady ? (
+                                      <Folder className="size-5" />
+                                    ) : thumbnailDataURL ? (
                                       <img
                                         src={thumbnailDataURL}
                                         alt=""
@@ -3259,7 +3372,7 @@ function App() {
                                     ) : (
                                       <Play className="size-4" />
                                     )}
-                                    {refreshingMetadata && (
+                                    {(refreshingMetadata || refreshingCover) && (
                                       <div className="absolute inset-0 flex items-center justify-center bg-background/60">
                                         <LoaderCircle className="size-5 animate-spin" />
                                       </div>
@@ -3267,36 +3380,31 @@ function App() {
                                   </div>
                                   <div className="min-w-0 flex-1">
                                     <div className="truncate font-medium">{entry.name}</div>
-                                    {isMobile && (
+                                    {isMobile && !entry.isDirectory && (
                                       <div className="mt-1 flex min-w-0 items-center justify-between gap-3 text-xs text-muted-foreground">
-                                        {entry.isDirectory ? (
-                                          <span className="min-w-0 truncate">文件夹</span>
-                                        ) : (
-                                          <span className="inline-flex min-w-0 max-w-full items-center gap-2.5">
-                                            <span className="shrink-0">{formatSize(entry.size)}</span>
-                                            {thumbnailResultReady && (
-                                              <span className="truncate">{formatVideoMediaMetadata(mediaMetadata)}</span>
-                                            )}
-                                          </span>
-                                        )}
+                                        <span className="inline-flex min-w-0 max-w-full items-center gap-2.5">
+                                          <span className="shrink-0">{formatSize(entry.size)}</span>
+                                          {thumbnailResultReady && (
+                                            <span className="truncate">{formatVideoMediaMetadata(mediaMetadata)}</span>
+                                          )}
+                                        </span>
                                         <span className="shrink-0">{formatDate(entry.modifiedAt)}</span>
                                       </div>
                                     )}
                                   </div>
+                                  {isMobile && entry.isDirectory && (
+                                    <span className="shrink-0 text-xs text-muted-foreground">{formatDate(entry.modifiedAt)}</span>
+                                  )}
                                 </div>
                               </TableCell>
-                              {!isMobile && (
+                              {!isMobile && !entry.isDirectory && (
                                 <TableCell className="px-3 py-2 text-muted-foreground sm:px-4">
-                                  {entry.isDirectory ? (
-                                    "—"
-                                  ) : (
-                                    <span className="inline-flex items-center gap-2.5">
-                                      <span>{formatSize(entry.size)}</span>
-                                      {thumbnailResultReady && (
-                                        <span>{formatVideoMediaMetadata(mediaMetadata)}</span>
-                                      )}
-                                    </span>
-                                  )}
+                                  {formatSize(entry.size)}
+                                </TableCell>
+                              )}
+                              {!isMobile && !entry.isDirectory && (
+                                <TableCell className="px-3 py-2 text-muted-foreground sm:px-4">
+                                  {thumbnailResultReady ? formatVideoMediaMetadata(mediaMetadata) : ""}
                                 </TableCell>
                               )}
                               {!isMobile && (
@@ -3320,13 +3428,19 @@ function App() {
                             >
                               <ContextMenuTrigger render={row} />
                               <ContextMenuContent>
+                                <ContextMenuGroup>
                                 <ContextMenuItem
                                   disabled={refreshingMetadata}
                                   onClick={() => void refreshVideoMetadata(entry)}
                                 >
                                   <RefreshCw />
-                                  重新获取元信息
+                                  刷新元信息
                                 </ContextMenuItem>
+                                <ContextMenuItem disabled={refreshingCover} onClick={() => void refreshVideoCover(entry)}>
+                                  <RefreshCw />
+                                  刷新封面
+                                </ContextMenuItem>
+                                </ContextMenuGroup>
                               </ContextMenuContent>
                             </ContextMenu>
                           );
@@ -3334,7 +3448,7 @@ function App() {
                     </TableBody>
                   </Table>
                 </ScrollArea>
-                {(loading || visibleEntries.length === 0) && (
+                {visibleEntries.length === 0 && (
                   <div className={cn(
                     "absolute inset-x-0 bottom-0 flex items-center justify-center text-muted-foreground",
                     isMobile ? "top-0" : "top-10",
@@ -3394,23 +3508,21 @@ function App() {
             <div className="mx-auto grid w-full max-w-3xl gap-3 p-3 sm:gap-4 sm:p-6">
               <Card>
                 <CardHeader>
-                  <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center sm:gap-4">
+                  <div className="flex items-center justify-between gap-3 sm:gap-4">
                     <div className="space-y-1.5">
                       <CardTitle>WebDAV 网盘</CardTitle>
                     </div>
-                    <Button
-                      size="sm"
-                      onClick={() => {
+                    <Button size="sm" className="shrink-0 whitespace-nowrap" onClick={() => {
                         setEditingAccount(null);
                         setAccountDialogOpen(true);
-                      }}
-                    >
-                      <Plus />
-                      添加 WebDAV
+                    }}>
+                      <Plus data-icon="inline-start" />
+                      添加账户
                     </Button>
                   </div>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                <CardContent>
+                  <div className="divide-y rounded-lg border">
                   {accounts.map((account) => {
                     const stats = providerBrowseStats[account.id] ?? {
                       directoryCache: { count: 0, totalEntries: 0, totalBytes: 0 },
@@ -3419,38 +3531,34 @@ function App() {
                       forwardHistory: 0,
                     };
                     return (
-                      <div key={account.id} className="space-y-4 rounded-lg border p-3 sm:p-4">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="min-w-0 space-y-1">
+                      <div key={account.id} className="flex flex-col gap-3 p-3 sm:p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex min-w-0 flex-col gap-1">
                             <div className="flex flex-wrap items-center gap-2">
-                              <div className="font-medium">{account.name}</div>
+                              <div className="truncate font-medium">{account.name}</div>
                               {account.id === state.activeAccountId && <Badge variant="secondary">当前</Badge>}
                             </div>
-                            <div className="break-all text-xs text-muted-foreground">{account.endpoint}</div>
+                            <div className="truncate text-xs text-muted-foreground" title={account.endpoint}>{account.endpoint}</div>
                           </div>
-                          <div className="flex gap-2">
+                          <div className="flex shrink-0 items-center gap-2">
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => {
+                              onClick={() => void testWebDAVAccount(account)}
+                              disabled={testingAccountIDs.has(account.id)}
+                              aria-busy={testingAccountIDs.has(account.id)}
+                              title="测试根目录访问"
+                            >
+                              {testingAccountIDs.has(account.id) ? <LoaderCircle data-icon="inline-start" className="animate-spin" /> : <Activity data-icon="inline-start" />}
+                              测试
+                            </Button>
+                            <AccountActionsMenu onEdit={() => {
                                 setEditingAccount(account);
                                 setAccountDialogOpen(true);
-                              }}
-                            >
-                              <Pencil />
-                              编辑
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
+                              }} onDelete={() => {
                                 setAccountPendingDelete(account);
                                 setDeleteDialogOpen(true);
-                              }}
-                            >
-                              <Trash2 />
-                              删除
-                            </Button>
+                              }} />
                           </div>
                         </div>
                         <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
@@ -3464,12 +3572,14 @@ function App() {
                             disabled={stats.directoryCache.count === 0}
                           >
                             <Trash2 />
-                            清空列表缓存
+                            清空
                           </Button>
                         </div>
                       </div>
                     );
                   })}
+                  {accounts.length === 0 && <Empty><EmptyDescription>暂无账户</EmptyDescription></Empty>}
+                  </div>
                 </CardContent>
               </Card>
 
@@ -3525,7 +3635,7 @@ function App() {
                   <CardTitle>视频元信息缓存</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="grid gap-4 sm:grid-cols-3">
+                  <div className="grid gap-4 sm:grid-cols-2">
                     <div className="grid gap-2">
                       <Label htmlFor="video-metadata-max-age">最长保留时间（天）</Label>
                       <Input
@@ -3548,17 +3658,7 @@ function App() {
                         onChange={(event) => setVideoMetadataMaxSizeInput(event.target.value)}
                       />
                     </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="video-metadata-thumbnail-offset">缩略图截帧位置（%）</Label>
-                      <Input
-                        id="video-metadata-thumbnail-offset"
-                        type="number"
-                        min={0}
-                        max={100}
-                        value={videoMetadataThumbnailOffsetPercentInput}
-                        onChange={(event) => setVideoMetadataThumbnailOffsetPercentInput(event.target.value)}
-                      />
-                    </div>
+
                   </div>
                   <Button
                     onClick={() => void saveVideoMetadataSettings()}
@@ -3582,7 +3682,7 @@ function App() {
                       disabled={videoMetadataStats.count === 0}
                     >
                       <Trash2 />
-                      清空视频元信息缓存
+                      清空
                     </Button>
                   </div>
                 </CardContent>
@@ -3590,10 +3690,21 @@ function App() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>视频时间点截图</CardTitle>
+                  <CardTitle>视频关键帧缓存</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <div className="grid gap-2">
+                      <Label htmlFor="video-metadata-thumbnail-offset">封面截帧位置（%）</Label>
+                      <Input
+                        id="video-metadata-thumbnail-offset"
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={videoMetadataThumbnailOffsetPercentInput}
+                        onChange={(event) => setVideoMetadataThumbnailOffsetPercentInput(event.target.value)}
+                      />
+                    </div>
                     <div className="grid gap-2">
                       <Label htmlFor="video-snapshot-max-age">最长保留时间（天）</Label>
                       <Input
@@ -3639,7 +3750,7 @@ function App() {
                       disabled={videoSnapshotStats.count === 0}
                     >
                       <Trash2 />
-                      清空视频截图
+                      清空
                     </Button>
                   </div>
                 </CardContent>
@@ -3696,7 +3807,7 @@ function App() {
                       disabled={playbackProgressStats.count === 0}
                     >
                       <Trash2 />
-                      清空播放进度
+                      清空
                     </Button>
                   </div>
                 </CardContent>
@@ -3778,24 +3889,8 @@ function App() {
                 </CardHeader>
                 <CardContent className="grid gap-4 text-sm">
                   <div className="grid gap-1">
-                    <span className="text-muted-foreground">本地数据目录</span>
+                    <span className="text-muted-foreground">数据目录</span>
                     <code className="break-all rounded bg-muted px-2 py-1">{state.storageDirectory}</code>
-                  </div>
-                  <div className="grid gap-1">
-                    <span className="text-muted-foreground">配置文件</span>
-                    <code className="break-all rounded bg-muted px-2 py-1">{state.configPath}</code>
-                  </div>
-                  <div className="grid gap-1">
-                    <span className="text-muted-foreground">视频元信息目录</span>
-                    <code className="break-all rounded bg-muted px-2 py-1">{state.videoMetadataDirectory}</code>
-                  </div>
-                  <div className="grid gap-1">
-                    <span className="text-muted-foreground">视频截图目录</span>
-                    <code className="break-all rounded bg-muted px-2 py-1">{state.videoSnapshotDirectory}</code>
-                  </div>
-                  <div className="grid gap-1">
-                    <span className="text-muted-foreground">播放进度文件</span>
-                    <code className="break-all rounded bg-muted px-2 py-1">{state.playbackProgressPath}</code>
                   </div>
                 </CardContent>
               </Card>

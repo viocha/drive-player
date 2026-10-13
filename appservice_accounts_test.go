@@ -6,9 +6,49 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestWebDAVConnectionUsesSavedAccountAndSingleRequest(t *testing.T) {
+	for _, scenario := range []struct {
+		name       string
+		status     int
+		propStatus string
+		wantError  bool
+	}{
+		{"正常", http.StatusMultiStatus, "200 OK", false},
+		{"认证失败", http.StatusUnauthorized, "", true},
+		{"根目录不可读", http.StatusMultiStatus, "403 Forbidden", true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				user, password, ok := r.BasicAuth()
+				if r.Method != "PROPFIND" || r.URL.Path != "/dav/" || r.Header.Get("Depth") != "0" || !ok || user != "user" || password != "password" {
+					t.Errorf("连接测试未按指定账户发送根目录请求")
+				}
+				w.WriteHeader(scenario.status)
+				_, _ = w.Write([]byte(`<d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 ` + scenario.propStatus + `</d:status></d:propstat></d:response></d:multistatus>`))
+			}))
+			defer server.Close()
+			service := &AppService{config: diskConfig{ActiveAccountID: "active", Accounts: []WebDAVAccount{{ID: "test", Endpoint: server.URL + "/dav", Username: "user", Password: "password"}}}, httpClient: server.Client()}
+			err := service.TestWebDAVAccount(t.Context(), "test")
+			if (err != nil) != scenario.wantError {
+				t.Fatalf("连接测试结果不符：%v", err)
+			}
+			if requests.Load() != 1 || service.config.ActiveAccountID != "active" {
+				t.Fatal("连接测试应只发送一次请求且保留当前账户")
+			}
+			if err := service.TestWebDAVAccount(t.Context(), "missing"); err == nil || !strings.Contains(err.Error(), "不存在") || requests.Load() != 1 {
+				t.Fatal("不存在的账户不应发起请求")
+			}
+		})
+	}
+}
 
 func newMultiAccountTestService(t *testing.T) *AppService {
 	t.Helper()
