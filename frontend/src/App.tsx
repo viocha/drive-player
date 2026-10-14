@@ -3166,15 +3166,6 @@ function App() {
                       </Button>
                     </>
                   )}
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={() => void loadDirectory(currentPath, true)}
-                    disabled={loading}
-                    aria-label="刷新目录"
-                  >
-                    <RefreshCw className={loading ? "animate-spin" : ""} />
-                  </Button>
                   <Breadcrumb
                     ref={breadcrumbScrollRef}
                     className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-1"
@@ -3213,6 +3204,15 @@ function App() {
                       ))}
                     </BreadcrumbList>
                   </Breadcrumb>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => void loadDirectory(currentPath, true)}
+                    disabled={loading}
+                    aria-label="刷新目录"
+                  >
+                    <RefreshCw className={loading ? "animate-spin" : ""} />
+                  </Button>
                 </div>
               </div>
 
