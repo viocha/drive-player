@@ -117,6 +117,10 @@ export function SetPlaybackProgressSettings(maxAgeDays: number, maxSizeMB: numbe
     return $Call.ByID(3472923853, maxAgeDays, maxSizeMB);
 }
 
+export function SetTitleLines(lines: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(3018750199, lines);
+}
+
 export function SetVideoDataSettings(maxAgeMinutes: number, maxSizeMB: number): $CancellablePromise<$models.AppState> {
     return $Call.ByID(3104558396, maxAgeMinutes, maxSizeMB);
 }

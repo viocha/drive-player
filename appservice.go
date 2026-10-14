@@ -37,6 +37,7 @@ const (
 	defaultFullscreenHUDEnabled                = false
 	defaultFullscreenHUDSideOffsetPX           = 0
 	defaultMobileLongPressRate                 = 3.0
+	defaultTitleLines                          = 1
 	minVideoMetadataMaxAgeDays                 = 1
 	maxVideoMetadataMaxAgeDays                 = 3650
 	minVideoMetadataMaxSizeMB                  = 16
@@ -58,6 +59,7 @@ const (
 )
 
 type AppState struct {
+	TitleLines                          int                  `json:"titleLines"`
 	VideoDataMaxAgeMinutes              int                  `json:"videoDataMaxAgeMinutes"`
 	VideoDataMaxSizeMB                  int                  `json:"videoDataMaxSizeMB"`
 	Connected                           bool                 `json:"connected"`
@@ -102,6 +104,7 @@ type FileEntry struct {
 }
 
 type diskConfig struct {
+	TitleLines                          int             `json:"titleLines"`
 	VideoDataMaxAgeMinutes              int             `json:"videoDataMaxAgeMinutes"`
 	VideoDataMaxSizeMB                  int             `json:"videoDataMaxSizeMB"`
 	Accounts                            []WebDAVAccount `json:"accounts"`
@@ -137,6 +140,7 @@ func NewAppService() (*AppService, error) {
 	}
 
 	config := diskConfig{
+		TitleLines:                          defaultTitleLines,
 		VideoDataMaxAgeMinutes:              defaultVideoDataMaxAgeMinutes,
 		VideoDataMaxSizeMB:                  defaultVideoDataMaxSizeMB,
 		VideoMetadataMaxAgeDays:             defaultVideoMetadataMaxAgeDays,
@@ -152,6 +156,9 @@ func NewAppService() (*AppService, error) {
 	}
 	if data, err := os.ReadFile(configPath); err == nil {
 		_ = json.Unmarshal(data, &config)
+	}
+	if config.TitleLines < 1 || config.TitleLines > 3 {
+		config.TitleLines = defaultTitleLines
 	}
 	if config.VideoDataMaxAgeMinutes < 1 || config.VideoDataMaxAgeMinutes > 10080 {
 		config.VideoDataMaxAgeMinutes = defaultVideoDataMaxAgeMinutes
@@ -300,6 +307,7 @@ func (s *AppService) GetState() AppState {
 		})
 	}
 	return AppState{
+		TitleLines:                          s.config.TitleLines,
 		VideoDataMaxAgeMinutes:              s.config.VideoDataMaxAgeMinutes,
 		VideoDataMaxSizeMB:                  s.config.VideoDataMaxSizeMB,
 		Connected:                           len(accounts) > 0 && s.config.ActiveAccountID != "",
@@ -807,6 +815,24 @@ func (s *AppService) SetMobileLongPressRate(rate float64) (AppState, error) {
 	config := s.config
 	s.mu.Unlock()
 
+	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.config = previous
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	return s.GetState(), nil
+}
+
+func (s *AppService) SetTitleLines(lines int) (AppState, error) {
+	if lines < 1 || lines > 3 {
+		return AppState{}, errors.New("标题行数必须在 1 到 3 行之间")
+	}
+	s.mu.Lock()
+	previous := s.config
+	s.config.TitleLines = lines
+	config := s.config
+	s.mu.Unlock()
 	if err := s.saveConfig(config); err != nil {
 		s.mu.Lock()
 		s.config = previous

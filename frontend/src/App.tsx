@@ -99,6 +99,8 @@ import { VIDEO_SEEK_COMPLETE_EVENT, videoSeekControllers } from "@/lib/video-see
 import { formatPlayerTime } from "@/lib/player-time";
 import { FullscreenHUD, type FullscreenHUDHandle } from "@/components/fullscreen-hud";
 import { VideoDataCacheSettings } from "@/components/video-data-cache-settings";
+import { TitleLinesSettings } from "@/components/title-lines-settings";
+import { fileTitleClassName } from "@/lib/file-title";
 import { waitForPlaybackAvailability, withPlaybackPriority } from "@/lib/playback-priority";
 import { encodeCanvasPNG } from "@/lib/canvas-png";
 
@@ -410,12 +412,14 @@ function VideoListPane({
   switchingPath,
   onSelectVideo,
   active,
+  titleLines,
 }: {
   videos: FileEntry[];
   currentPath: string;
   switchingPath: string | null;
   onSelectVideo: (entry: FileEntry) => void;
   active: boolean;
+  titleLines: number;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const initiallyCenteredRef = useRef(false);
@@ -477,7 +481,7 @@ function VideoListPane({
               >
                 {switching ? <LoaderCircle className="animate-spin" /> : current ? <Play /> : null}
                 <span className="w-0 min-w-0 flex-1 overflow-hidden">
-                  <span className="block w-full truncate text-sm font-medium">{video.name}</span>
+                  <span className={cn("w-full text-sm font-medium", fileTitleClassName(titleLines))}>{video.name}</span>
                   <span className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground">
                     <span className="shrink-0">{formatSize(video.size)}</span>
                     <span className="min-w-0 truncate text-right" title={modifiedAt}>{modifiedAt}</span>
@@ -494,6 +498,7 @@ function VideoListPane({
 
 function VideoPlayerSidebar({
   className,
+  titleLines,
   twoColumns = false,
   visible = true,
   tab,
@@ -506,6 +511,7 @@ function VideoPlayerSidebar({
   ...snapshotProps
 }: {
   className: string;
+  titleLines: number;
   twoColumns?: boolean;
   visible?: boolean;
   tab: PlayerSidebarTab;
@@ -548,6 +554,7 @@ function VideoPlayerSidebar({
         </TabsContent>
         <TabsContent value="videos" keepMounted className="flex min-h-0 overflow-hidden">
           <VideoListPane
+            titleLines={titleLines}
             videos={videos}
             currentPath={currentPath}
             switchingPath={switchingPath}
@@ -569,6 +576,7 @@ function VideoPlayer({
   isAndroid,
   isMobile,
   mobileLongPressRate,
+  titleLines,
   fullscreenHUDEnabled,
   fullscreenHUDSideOffsetPX,
   directoryVideos,
@@ -582,6 +590,7 @@ function VideoPlayer({
   isAndroid: boolean;
   isMobile: boolean;
   mobileLongPressRate: number;
+  titleLines: number;
   fullscreenHUDEnabled: boolean;
   fullscreenHUDSideOffsetPX: number;
   directoryVideos: FileEntry[];
@@ -1366,6 +1375,7 @@ function VideoPlayer({
             onTimeSliderProgress={syncHUDWithTimeSlider}
             sidePanel={fullscreenActive ? (
               <VideoPlayerSidebar
+                titleLines={titleLines}
                 className={`video-player-sidebar video-player-sidebar--fullscreen${fullscreenSidePanelOpen ? "" : " video-player-sidebar--closed"}`}
                 visible={fullscreenSidePanelOpen}
                 tab={sidePanelTab}
@@ -1465,6 +1475,7 @@ function VideoPlayer({
       </div>
 
       <VideoPlayerSidebar
+        titleLines={titleLines}
         className={`video-player-sidebar${fullscreenActive ? " video-player-sidebar--detached-hidden" : ""}`}
         visible={!fullscreenActive}
         twoColumns={isMobile}
@@ -3281,7 +3292,7 @@ function App() {
                                     )}
                                   </div>
                                   <div className="min-w-0 flex-1">
-                                    <div className="truncate font-medium">{entry.name}</div>
+                                    <div className={cn("font-medium", fileTitleClassName(state.titleLines))}>{entry.name}</div>
                                     {isMobile && !entry.isDirectory && (
                                       <div className="mt-1 flex min-w-0 items-center justify-between gap-3 text-xs text-muted-foreground">
                                         <span className="inline-flex min-w-0 max-w-full items-center gap-2.5">
@@ -3484,6 +3495,8 @@ function App() {
                   </div>
                 </CardContent>
               </Card>
+
+              <TitleLinesSettings value={state.titleLines} onSave={setState} />
 
               <Card>
                 <CardHeader>
@@ -3857,6 +3870,7 @@ function App() {
                 isAndroid={isAndroid}
                 isMobile={isMobile}
                 mobileLongPressRate={state.mobileLongPressRate}
+                titleLines={state.titleLines}
                 fullscreenHUDEnabled={state.fullscreenHudEnabled}
                 fullscreenHUDSideOffsetPX={state.fullscreenHudSideOffsetPx}
                 directoryVideos={directoryVideos}
