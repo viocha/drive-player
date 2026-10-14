@@ -157,7 +157,7 @@ func (c *VideoSnapshotCache) saveImageLocked(fileName string, data []byte) (Vide
 	return c.pruneLocked(now)
 }
 
-// 封面和时间点截图共享容量、有效期和淘汰规则。
+// 封面和关键帧截图共享容量、有效期和淘汰规则。
 func (c *VideoSnapshotCache) SaveCover(key, dataURL string) (VideoSnapshotCacheStats, error) {
 	mimeType, data, err := decodeThumbnailDataURL(dataURL)
 	if err != nil {

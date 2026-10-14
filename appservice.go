@@ -25,6 +25,8 @@ import (
 )
 
 const (
+	defaultVideoDataMaxAgeMinutes              = 60
+	defaultVideoDataMaxSizeMB                  = 512
 	defaultVideoMetadataMaxAgeDays             = 365
 	defaultVideoMetadataMaxSizeMB              = 16
 	defaultVideoMetadataThumbnailOffsetPercent = 10
@@ -56,6 +58,8 @@ const (
 )
 
 type AppState struct {
+	VideoDataMaxAgeMinutes              int                  `json:"videoDataMaxAgeMinutes"`
+	VideoDataMaxSizeMB                  int                  `json:"videoDataMaxSizeMB"`
 	Connected                           bool                 `json:"connected"`
 	Accounts                            []WebDAVAccountState `json:"accounts"`
 	ActiveAccountID                     string               `json:"activeAccountId"`
@@ -98,6 +102,8 @@ type FileEntry struct {
 }
 
 type diskConfig struct {
+	VideoDataMaxAgeMinutes              int             `json:"videoDataMaxAgeMinutes"`
+	VideoDataMaxSizeMB                  int             `json:"videoDataMaxSizeMB"`
 	Accounts                            []WebDAVAccount `json:"accounts"`
 	ActiveAccountID                     string          `json:"activeAccountId"`
 	VideoMetadataMaxAgeDays             int             `json:"videoMetadataMaxAgeDays"`
@@ -119,6 +125,7 @@ type AppService struct {
 	proxy          *WebDAVProxy
 	videoMetadata  *VideoMetadataCache
 	videoSnapshots *VideoSnapshotCache
+	videoData      *VideoDataCache
 	progress       *PlaybackProgressStore
 	httpClient     *http.Client
 }
@@ -130,6 +137,8 @@ func NewAppService() (*AppService, error) {
 	}
 
 	config := diskConfig{
+		VideoDataMaxAgeMinutes:              defaultVideoDataMaxAgeMinutes,
+		VideoDataMaxSizeMB:                  defaultVideoDataMaxSizeMB,
 		VideoMetadataMaxAgeDays:             defaultVideoMetadataMaxAgeDays,
 		VideoMetadataMaxSizeMB:              defaultVideoMetadataMaxSizeMB,
 		VideoMetadataThumbnailOffsetPercent: defaultVideoMetadataThumbnailOffsetPercent,
@@ -143,6 +152,12 @@ func NewAppService() (*AppService, error) {
 	}
 	if data, err := os.ReadFile(configPath); err == nil {
 		_ = json.Unmarshal(data, &config)
+	}
+	if config.VideoDataMaxAgeMinutes < 1 || config.VideoDataMaxAgeMinutes > 10080 {
+		config.VideoDataMaxAgeMinutes = defaultVideoDataMaxAgeMinutes
+	}
+	if config.VideoDataMaxSizeMB < 0 || config.VideoDataMaxSizeMB > 10240 {
+		config.VideoDataMaxSizeMB = defaultVideoDataMaxSizeMB
 	}
 	if config.VideoMetadataMaxAgeDays < minVideoMetadataMaxAgeDays || config.VideoMetadataMaxAgeDays > maxVideoMetadataMaxAgeDays {
 		config.VideoMetadataMaxAgeDays = defaultVideoMetadataMaxAgeDays
@@ -199,11 +214,16 @@ func NewAppService() (*AppService, error) {
 		return nil, err
 	}
 
+	videoData, err := NewVideoDataCache(filepath.Join(filepath.Dir(configPath), "video-data"), time.Duration(config.VideoDataMaxAgeMinutes)*time.Minute, int64(config.VideoDataMaxSizeMB)*1024*1024)
+	if err != nil {
+		return nil, err
+	}
 	proxy, err := NewWebDAVProxy()
 	if err != nil {
 		return nil, err
 	}
 	proxy.SetVideoSnapshotDirectory(videoSnapshotDirectory)
+	proxy.SetVideoDataCache(videoData)
 	seenNames := make(map[string]struct{}, len(config.Accounts))
 	seenIDs := make(map[string]struct{}, len(config.Accounts))
 	for i := range config.Accounts {
@@ -240,6 +260,7 @@ func NewAppService() (*AppService, error) {
 		proxy:          proxy,
 		videoMetadata:  videoMetadataCache,
 		videoSnapshots: videoSnapshotCache,
+		videoData:      videoData,
 		progress:       playbackProgress,
 		httpClient:     &http.Client{Timeout: 30 * time.Second},
 	}
@@ -279,6 +300,8 @@ func (s *AppService) GetState() AppState {
 		})
 	}
 	return AppState{
+		VideoDataMaxAgeMinutes:              s.config.VideoDataMaxAgeMinutes,
+		VideoDataMaxSizeMB:                  s.config.VideoDataMaxSizeMB,
 		Connected:                           len(accounts) > 0 && s.config.ActiveAccountID != "",
 		Accounts:                            accounts,
 		ActiveAccountID:                     s.config.ActiveAccountID,
@@ -485,7 +508,7 @@ func (s *AppService) ListDirectory(ctx context.Context, remotePath string) ([]Fi
 	return s.listDirectoryWithAccount(ctx, remotePath, account)
 }
 
-func (s *AppService) GetPlaybackURL(remotePath string) (string, error) {
+func (s *AppService) GetPlaybackURL(remotePath, modifiedAt string, size int64) (string, error) {
 	account, err := s.currentAccount()
 	if err != nil {
 		return "", err
@@ -496,7 +519,37 @@ func (s *AppService) GetPlaybackURL(remotePath string) (string, error) {
 	if proxy == nil {
 		return "", errors.New("WebDAV 代理未启动")
 	}
-	return proxy.URLForPath(account.ID, normalizeRemotePath(remotePath)), nil
+	return proxy.URLForFile(account.ID, normalizeRemotePath(remotePath), modifiedAt, size), nil
+}
+
+func (s *AppService) GetVideoDataCacheStats() (VideoDataCacheStats, error) {
+	return s.videoData.Stats()
+}
+
+func (s *AppService) ClearVideoDataCache() (VideoDataCacheStats, error) { return s.videoData.Clear() }
+
+func (s *AppService) SetVideoDataSettings(maxAgeMinutes, maxSizeMB int) (AppState, error) {
+	if maxAgeMinutes < 1 || maxAgeMinutes > 10080 {
+		return AppState{}, errors.New("视频数据保留时间必须在 1 到 10080 分钟之间")
+	}
+	if maxSizeMB < 0 || maxSizeMB > 10240 {
+		return AppState{}, errors.New("视频数据缓存上限必须在 0 到 10240 MB 之间")
+	}
+	s.mu.Lock()
+	previous := s.config
+	s.config.VideoDataMaxAgeMinutes, s.config.VideoDataMaxSizeMB = maxAgeMinutes, maxSizeMB
+	config := s.config
+	s.mu.Unlock()
+	if err := s.saveConfig(config); err != nil {
+		s.mu.Lock()
+		s.config = previous
+		s.mu.Unlock()
+		return AppState{}, err
+	}
+	if err := s.videoData.SetLimits(time.Duration(maxAgeMinutes)*time.Minute, int64(maxSizeMB)*1024*1024); err != nil {
+		return AppState{}, err
+	}
+	return s.GetState(), nil
 }
 
 func (s *AppService) GetVideoMetadata(remotePath, modifiedAt string) (VideoMetadataResult, error) {
@@ -831,6 +884,9 @@ func (s *AppService) listDirectoryWithAccount(ctx context.Context, remotePath st
 			continue
 		}
 		entries = append(entries, entry)
+		if !entry.IsDirectory && s.proxy != nil {
+			s.proxy.URLForFile(account.ID, entry.Path, entry.ModifiedAt, entry.Size)
+		}
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
 		if entries[i].IsDirectory != entries[j].IsDirectory {

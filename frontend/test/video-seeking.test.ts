@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createVideoSeekController, type VideoSeekState } from "../src/lib/video-seeking";
 
-function fixture({ frameCallback = true, fastSeek = false } = {}) {
+function fixture({ frameCallback = true, fastSeek = false, fastSeekRounds = true } = {}) {
   const paints = new Map<number, FrameRequestCallback>();
   const frames = new Map<number, VideoFrameRequestCallback>();
   const writes: Array<{ position: number; precise: boolean }> = [];
@@ -16,7 +16,7 @@ function fixture({ frameCallback = true, fastSeek = false } = {}) {
       requestVideoFrameCallback(callback: VideoFrameRequestCallback) { frames.set(++id, callback); return id; },
       cancelVideoFrameCallback(key: number) { frames.delete(key); },
     } : {}),
-    ...(fastSeek ? { fastSeek(next: number) { position = Math.floor(next / 10) * 10; writes.push({ position, precise: false }); this.seeking = true; this.dispatchEvent(new Event("seeking")); } } : {}),
+    ...(fastSeek ? { fastSeek(next: number) { position = fastSeekRounds ? Math.floor(next / 10) * 10 : next; writes.push({ position, precise: false }); this.seeking = true; this.dispatchEvent(new Event("seeking")); } } : {}),
   });
   Object.defineProperty(video, "currentTime", {
     get: () => position,
@@ -39,6 +39,19 @@ function fixture({ frameCallback = true, fastSeek = false } = {}) {
   const finish = () => { seeked(); present(); paint(); };
   return { controller, video: media, writes, states, frames, paints, present, seeked, paint, finish };
 }
+
+test("粗定位尚未完成时，currentTime 已等于目标也必须提交精确定位", () => {
+  const f = fixture({ fastSeek: true, fastSeekRounds: false });
+  f.controller.beginScrub();
+  f.controller.preview(46.5);
+  f.controller.endScrub();
+  expect(f.writes).toEqual([{ position: 46.5, precise: false }, { position: 46.5, precise: true }]);
+  expect(f.controller.pending).toBe(true);
+  f.finish();
+  expect(f.controller.pending).toBe(false);
+  expect(f.video.paused).toBe(false);
+  f.controller.destroy();
+});
 
 test("高频目标合并，呈现中间帧后只追赶最新目标", async () => {
   const f = fixture();
@@ -110,12 +123,28 @@ test("滑动期间可粗定位，松手精确定位并恢复播放", () => {
   f.controller.preview(46.5);
   expect(f.video.paused).toBe(true);
   f.controller.endScrub();
-  expect(f.writes).toEqual([{ position: 20, precise: false }]);
-  f.finish();
-  expect(f.writes.at(-1)).toEqual({ position: 46.5, precise: true });
+  expect(f.writes).toEqual([{ position: 20, precise: false }, { position: 46.5, precise: true }]);
   expect(f.video.paused).toBe(true);
   f.finish();
   expect(f.video.currentTime).toBe(46.5);
+  expect(f.video.paused).toBe(false);
+  f.controller.destroy();
+});
+
+test("松手立即跳过未完成的中间位置，排队的最终提交也立即生效", async () => {
+  const f = fixture();
+  f.controller.beginScrub();
+  f.controller.preview(10);
+  f.controller.preview(60);
+  const committed = f.controller.seek(60);
+  f.controller.endScrub();
+  expect(f.writes.map((item) => item.position)).toEqual([10, 60]);
+  expect(f.frames.size).toBe(1);
+  f.video.dispatchEvent(new Event("seeked"));
+  f.paint();
+  expect(f.controller.pending).toBe(true);
+  f.finish();
+  expect(await committed).toBe(60);
   expect(f.video.paused).toBe(false);
   f.controller.destroy();
 });

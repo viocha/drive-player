@@ -17,6 +17,10 @@ export function ClearPlaybackProgress(): $CancellablePromise<$models.PlaybackPro
     return $Call.ByID(1808486217);
 }
 
+export function ClearVideoDataCache(): $CancellablePromise<$models.VideoDataCacheStats> {
+    return $Call.ByID(1268100780);
+}
+
 export function ClearVideoMetadataCache(): $CancellablePromise<$models.VideoMetadataCacheStats> {
     return $Call.ByID(2061626127);
 }
@@ -41,8 +45,8 @@ export function GetPlaybackProgressStats(): $CancellablePromise<$models.Playback
     return $Call.ByID(787696055);
 }
 
-export function GetPlaybackURL(remotePath: string): $CancellablePromise<string> {
-    return $Call.ByID(3299233076, remotePath);
+export function GetPlaybackURL(remotePath: string, modifiedAt: string, size: number): $CancellablePromise<string> {
+    return $Call.ByID(3299233076, remotePath, modifiedAt, size);
 }
 
 export function GetState(): $CancellablePromise<$models.AppState> {
@@ -51,6 +55,10 @@ export function GetState(): $CancellablePromise<$models.AppState> {
 
 export function GetVideoCover(remotePath: string, modifiedAt: string): $CancellablePromise<string> {
     return $Call.ByID(2289720240, remotePath, modifiedAt);
+}
+
+export function GetVideoDataCacheStats(): $CancellablePromise<$models.VideoDataCacheStats> {
+    return $Call.ByID(2204425116);
 }
 
 export function GetVideoMetadata(remotePath: string, modifiedAt: string): $CancellablePromise<$models.VideoMetadataResult> {
@@ -107,6 +115,10 @@ export function SetMobileLongPressRate(rate: number): $CancellablePromise<$model
 
 export function SetPlaybackProgressSettings(maxAgeDays: number, maxSizeMB: number): $CancellablePromise<$models.AppState> {
     return $Call.ByID(3472923853, maxAgeDays, maxSizeMB);
+}
+
+export function SetVideoDataSettings(maxAgeMinutes: number, maxSizeMB: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(3104558396, maxAgeMinutes, maxSizeMB);
 }
 
 export function SetVideoMetadataSettings(maxAgeDays: number, maxSizeMB: number): $CancellablePromise<$models.AppState> {

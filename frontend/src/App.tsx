@@ -21,7 +21,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { Events, System } from "@wailsio/runtime";
+import { System } from "@wailsio/runtime";
 import { AppService } from "../bindings/drive-player";
 import type {
   AppState,
@@ -96,6 +96,11 @@ import { cn } from "@/lib/utils";
 import { reconcileDirectoryEntries } from "@/lib/directory-refresh";
 import { driveVideoFeatures } from "@/lib/video-features";
 import { VIDEO_SEEK_COMPLETE_EVENT, videoSeekControllers } from "@/lib/video-seeking";
+import { formatPlayerTime } from "@/lib/player-time";
+import { FullscreenHUD, type FullscreenHUDHandle } from "@/components/fullscreen-hud";
+import { VideoDataCacheSettings } from "@/components/video-data-cache-settings";
+import { waitForPlaybackAvailability, withPlaybackPriority } from "@/lib/playback-priority";
+import { encodeCanvasPNG } from "@/lib/canvas-png";
 
 const { Player } = createPlayer({ features: driveVideoFeatures });
 
@@ -311,25 +316,6 @@ function pruneDirectoryCache(
   return stats;
 }
 
-function formatPlayerTime(seconds: number) {
-  if (!Number.isFinite(seconds) || seconds < 0) return "--:--";
-  const totalSeconds = Math.floor(seconds);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const secs = totalSeconds % 60;
-  return hours > 0
-    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
-    : `${minutes}:${String(secs).padStart(2, "0")}`;
-}
-
-function formatHUDClock(timestamp: number) {
-  return new Date(timestamp).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-}
-
 type PlayerSidebarTab = "snapshots" | "videos";
 
 function VideoSnapshotPane({
@@ -359,7 +345,7 @@ function VideoSnapshotPane({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border p-3">
         <div className="min-w-0">
-          <div className="text-sm font-medium">时间点截图</div>
+          <div className="text-sm font-medium">关键帧截图</div>
           {(loading || extracting || snapshots.length > 0) && (
             <div className="mt-0.5 text-xs text-muted-foreground">
               {loading
@@ -548,7 +534,7 @@ function VideoPlayerSidebar({
       >
         <div className="flex shrink-0 items-center gap-2 border-b border-border p-2">
           <TabsList className="grid min-w-0 flex-1 grid-cols-2">
-            <TabsTrigger value="snapshots">时间点截图</TabsTrigger>
+            <TabsTrigger value="snapshots">关键帧截图</TabsTrigger>
             <TabsTrigger value="videos">视频列表</TabsTrigger>
           </TabsList>
           {onClose && (
@@ -626,9 +612,9 @@ function VideoPlayer({
   const [fullscreenSidePanelOpen, setFullscreenSidePanelOpen] = useState(false);
   const [sidePanelTab, setSidePanelTab] = useState<PlayerSidebarTab>("snapshots");
   const [switchingVideoPath, setSwitchingVideoPath] = useState<string | null>(null);
-  const [hudClock, setHUDClock] = useState(() => Date.now());
-  const [hudBatteryPercent, setHUDBatteryPercent] = useState<number | null>(null);
-  const [hudProgress, setHUDProgress] = useState({ position: initialPosition, duration: 0 });
+  const hudRef = useRef<FullscreenHUDHandle | null>(null);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const setHUDProgress = useCallback((progress: { position: number; duration: number }) => hudRef.current?.updateProgress(progress), []);
   const [videoSnapshots, setVideoSnapshots] = useState<VideoSnapshot[]>([]);
   const [videoSnapshotsLoading, setVideoSnapshotsLoading] = useState(true);
   const [videoSnapshotExtracting, setVideoSnapshotExtracting] = useState(false);
@@ -678,6 +664,7 @@ function VideoPlayer({
     hudSliderDraggingRef.current = false;
     hudGestureDraggingRef.current = false;
     hudSeekPendingRef.current = false;
+    setVideoDuration(0);
     setHUDProgress({ position: initialPosition, duration: 0 });
   }, [initialPosition, src]);
 
@@ -712,19 +699,19 @@ function VideoPlayer({
   }, [modifiedAt, remotePath]);
 
   useEffect(() => {
-    const plannedTimes = plannedVideoSnapshotTimes(hudProgress.duration);
+    const plannedTimes = plannedVideoSnapshotTimes(videoDuration);
     setVideoSnapshotPlannedCount(plannedTimes.length);
     if (videoSnapshotExtracting) return;
     setVideoSnapshotCompletedCount(
       plannedTimes.filter((position) => hasVideoSnapshotAt(videoSnapshots, position)).length,
     );
-  }, [hudProgress.duration, videoSnapshotExtracting, videoSnapshots]);
+  }, [videoDuration, videoSnapshotExtracting, videoSnapshots]);
 
   const startVideoSnapshotExtraction = useCallback(async (refreshAll = false) => {
     if (videoSnapshotsLoading || videoSnapshotExtracting) return;
     const sourceVideo = videoRef.current;
     const duration = sourceVideo?.duration ?? 0;
-    if (!Number.isFinite(duration) || duration <= 0) {
+    if (!sourceVideo || !Number.isFinite(duration) || duration <= 0) {
       toast.add({ title: "暂时无法提取截图", description: "视频时长尚未加载完成", type: "error" });
       return;
     }
@@ -749,6 +736,7 @@ function VideoPlayer({
         src,
         missingTimes,
         controller.signal,
+        sourceVideo,
         async (snapshot) => {
           const saveRequest = AppService.SaveVideoSnapshot(remotePath, modifiedAt, snapshot.position, snapshot.dataUrl);
           const cancelSave = () => saveRequest.cancel("video snapshot extraction aborted");
@@ -863,90 +851,6 @@ function VideoPlayer({
     }
   }, [fullscreenActive]);
 
-  useEffect(() => {
-    if (!fullscreenHUDVisible) return;
-
-    let cancelled = false;
-    let androidBatteryCleanup: (() => void) | null = null;
-    let desktopBatteryCleanup: (() => void) | null = null;
-
-    const setBatteryPercent = (percent: number) => {
-      setHUDBatteryPercent(
-        Number.isFinite(percent) && percent >= 0
-          ? Math.max(0, Math.min(100, Math.round(percent)))
-          : null,
-      );
-    };
-
-    const setBatteryLevel = (level: number) => setBatteryPercent(level * 100);
-
-    const syncAndroidPower = () => {
-      try {
-        const level = JSON.parse(androidBridge()?.playerGetPower?.() ?? "{}")?.level;
-        setBatteryLevel(typeof level === "number" ? level : -1);
-      } catch {
-        setHUDBatteryPercent(null);
-      }
-    };
-
-    const subscribeAndroidPower = () => {
-      androidBatteryCleanup = Events.On("player:BatteryChanged", (event) => {
-        try {
-          const rawPayload = event.data as unknown;
-          const payload = typeof rawPayload === "string"
-            ? JSON.parse(rawPayload)
-            : rawPayload as { level?: unknown } | null;
-          const level = payload && typeof payload.level === "number" ? payload.level : -1;
-          setBatteryLevel(level);
-        } catch {
-          setHUDBatteryPercent(null);
-        }
-      });
-      // ACTION_BATTERY_CHANGED is sticky, so one synchronous read gives the
-      // current value immediately; all later updates arrive through the event.
-      syncAndroidPower();
-    };
-
-    const syncDesktopPower = async () => {
-      try {
-        const percent = await AppService.GetBatteryPercent();
-        if (cancelled) return;
-        setBatteryPercent(percent);
-      } catch {
-        if (!cancelled) setHUDBatteryPercent(null);
-      }
-    };
-
-    const video = videoRef.current;
-    if (video) {
-      setHUDProgress({ position: video.currentTime, duration: video.duration });
-    }
-    setHUDClock(Date.now());
-    if (isAndroid) {
-      subscribeAndroidPower();
-    } else {
-      void syncDesktopPower();
-      desktopBatteryCleanup = Events.On("player:BatteryChanged", () => {
-        void syncDesktopPower();
-      });
-    }
-
-    let clockTimeout = 0;
-    const scheduleClockUpdate = () => {
-      clockTimeout = window.setTimeout(() => {
-        setHUDClock(Date.now());
-        scheduleClockUpdate();
-      }, 60_000 - (Date.now() % 60_000) + 50);
-    };
-    scheduleClockUpdate();
-
-    return () => {
-      cancelled = true;
-      androidBatteryCleanup?.();
-      desktopBatteryCleanup?.();
-      window.clearTimeout(clockTimeout);
-    };
-  }, [androidBridge, fullscreenHUDVisible, isAndroid]);
 
   const clearGestureFeedbackHideTimer = useCallback(() => {
     if (gestureFeedbackHideTimerRef.current === null) return;
@@ -1495,6 +1399,7 @@ function VideoPlayer({
             autoPlay
             onLoadedMetadata={(event) => {
               const video = event.currentTarget;
+              setVideoDuration(video.duration);
               endedRef.current = false;
               hudSliderDraggingRef.current = false;
               hudGestureDraggingRef.current = false;
@@ -1507,6 +1412,7 @@ function VideoPlayer({
                 setAndroidFullscreen(true);
               }
             }}
+            onDurationChange={(event) => setVideoDuration(event.currentTarget.duration)}
             onTimeUpdate={(event) => {
               if (
                 hudSeekPendingRef.current
@@ -1553,24 +1459,7 @@ function VideoPlayer({
             <div ref={miniProgressRef} className="video-mini-progress__fill" />
           </div>
           <div ref={gestureFeedbackRef} className="media-surface video-gesture-feedback" hidden aria-live="polite" />
-          {fullscreenHUDVisible && (
-            <div
-              className="video-fullscreen-hud"
-              style={{
-                left: `${fullscreenHUDSideOffsetPX}px`,
-                right: `${fullscreenHUDSideOffsetPX}px`,
-              }}
-              aria-hidden="true"
-            >
-              <span className="video-fullscreen-hud__chip video-fullscreen-hud__status">
-                <span>{formatHUDClock(hudClock)}</span>
-                {hudBatteryPercent !== null && <span>{hudBatteryPercent}%</span>}
-              </span>
-              <span className="video-fullscreen-hud__chip video-fullscreen-hud__progress">
-                {formatPlayerTime(hudProgress.position)} / {formatPlayerTime(hudProgress.duration)}
-              </span>
-            </div>
-          )}
+          {fullscreenHUDVisible && <FullscreenHUD ref={hudRef} videoRef={videoRef} isAndroid={isAndroid} androidBridge={androidBridge} sideOffset={fullscreenHUDSideOffsetPX} />}
           </DriveVideoSkin>
         </Player>
       </div>
@@ -1767,11 +1656,12 @@ async function extractVideoSnapshots(
   src: string,
   positions: number[],
   signal: AbortSignal,
+  foregroundVideo: HTMLVideoElement,
   onSnapshot: (snapshot: { position: number; dataUrl: string }) => Promise<void>,
 ) {
   const video = document.createElement("video");
   video.crossOrigin = "anonymous";
-  video.preload = "auto";
+  video.preload = "metadata";
   video.muted = true;
   video.playsInline = true;
 
@@ -1783,24 +1673,36 @@ async function extractVideoSnapshots(
   signal.addEventListener("abort", onAbort, { once: true });
 
   try {
-    video.src = src;
-    video.load();
-    await waitForVideoSnapshotMetadata(video, signal);
-    if (!video.videoWidth || !video.videoHeight) throw new Error("视频没有可截图的原始画面");
     if (positions.length === 0) return;
 
     const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("无法创建视频截图画布");
 
     for (const position of positions) {
       if (signal.aborted) throw videoSnapshotAbortError();
-      await seekVideoForSnapshot(video, position, signal);
-      if (signal.aborted) throw videoSnapshotAbortError();
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      await onSnapshot({ position, dataUrl: canvas.toDataURL("image/png") });
+      const dataUrl = await withPlaybackPriority(foregroundVideo, signal, async (phase) => {
+        phase.addEventListener("abort", dispose, { once: true });
+        try {
+          if (!video.getAttribute("src")) {
+            const metadata = waitForVideoSnapshotMetadata(video, phase);
+            video.src = src;
+            video.load();
+            await metadata;
+          }
+          if (!video.videoWidth || !video.videoHeight) throw new Error("视频没有可截图的原始画面");
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          await seekVideoForSnapshot(video, position, phase);
+          if (phase.aborted) throw videoSnapshotAbortError();
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          return await encodeCanvasPNG(canvas, phase);
+        } finally {
+          phase.removeEventListener("abort", dispose);
+        }
+      });
+      await waitForPlaybackAvailability(foregroundVideo, signal);
+      await onSnapshot({ position, dataUrl });
     }
   } finally {
     signal.removeEventListener("abort", onAbort);
@@ -2342,7 +2244,7 @@ function App() {
   }, []);
 
   const generateAndCacheVideoMetadata = useCallback(async (entry: FileEntry, signal: AbortSignal) => {
-    const playbackURL = await AppService.GetPlaybackURL(entry.path);
+    const playbackURL = await AppService.GetPlaybackURL(entry.path, entry.modifiedAt, entry.size);
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
     const analyzedMetadata = await analyzeVideoMetadata(playbackURL, entry.size, signal);
@@ -2370,7 +2272,7 @@ function App() {
   }, []);
 
   const generateAndCacheVideoCover = useCallback(async (entry: FileEntry, signal: AbortSignal) => {
-    const playbackURL = await AppService.GetPlaybackURL(entry.path);
+    const playbackURL = await AppService.GetPlaybackURL(entry.path, entry.modifiedAt, entry.size);
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     const thumbnail = await captureVideoThumbnail(playbackURL, state?.videoMetadataThumbnailOffsetPercent ?? 10, signal);
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -2861,7 +2763,7 @@ function App() {
 
   const activateVideoEntry = async (entry: FileEntry) => {
     const [url, progress] = await Promise.all([
-      AppService.GetPlaybackURL(entry.path),
+      AppService.GetPlaybackURL(entry.path, entry.modifiedAt, entry.size),
       AppService.GetPlaybackProgress(entry.path).catch(() => null),
     ]);
     setActiveVideo({
@@ -3629,6 +3531,8 @@ function App() {
                   </div>
                 </CardContent>
               </Card>
+
+              <VideoDataCacheSettings maxAgeMinutes={state.videoDataMaxAgeMinutes} maxSizeMB={state.videoDataMaxSizeMB} onSave={syncBackendState} />
 
               <Card>
                 <CardHeader>

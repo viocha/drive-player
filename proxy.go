@@ -27,6 +27,7 @@ type WebDAVProxy struct {
 	mu               sync.RWMutex
 	accounts         map[string]webDAVProxyAccount
 	videoSnapshotDir string
+	videoDataCache   *VideoDataCache
 }
 
 func NewWebDAVProxy() (*WebDAVProxy, error) {
@@ -109,6 +110,46 @@ func (p *WebDAVProxy) URLForPath(accountID, remotePath string) string {
 	return u.String()
 }
 
+func (p *WebDAVProxy) SetVideoDataCache(cache *VideoDataCache) {
+	p.mu.Lock()
+	p.videoDataCache = cache
+	p.mu.Unlock()
+}
+
+func (p *WebDAVProxy) URLForFile(accountID, remotePath, modifiedAt string, size int64) string {
+	local, _ := url.Parse(p.URLForPath(accountID, remotePath))
+	version := videoDataKey(modifiedAt, fmt.Sprint(size))
+	query := local.Query()
+	query.Set(videoVersionQuery, version)
+	local.RawQuery = query.Encode()
+	if account, ok := p.getAccount(accountID); ok {
+		p.mu.RLock()
+		cache := p.videoDataCache
+		p.mu.RUnlock()
+		if cache != nil {
+			target, _ := buildUpstreamURL(account.endpoint.String(), remotePath, nil)
+			cache.ObserveVersion(proxyVideoDataKey(accountID, account, target), version)
+		}
+	}
+	return local.String()
+}
+
+func proxyVideoDataKey(accountID string, account webDAVProxyAccount, target *url.URL) string {
+	return videoDataKey(accountID, target.String(), account.username, account.password)
+}
+
+func cacheableVideoRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet || r.URL.Query().Get(videoVersionQuery) == "" || strings.Contains(r.Header.Get("Range"), ",") {
+		return false
+	}
+	for _, header := range []string{"If-Match", "If-None-Match", "If-Modified-Since", "If-Unmodified-Since"} {
+		if r.Header.Get(header) != "" {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *WebDAVProxy) SetVideoSnapshotDirectory(dir string) {
 	p.mu.Lock()
 	p.videoSnapshotDir = dir
@@ -142,16 +183,38 @@ func (p *WebDAVProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstreamURL, err := buildUpstreamURL(account.endpoint.String(), remotePath, cloneQuery(r.URL.Query()))
+	query := cloneQuery(r.URL.Query())
+	version := query.Get(videoVersionQuery)
+	query.Del(videoVersionQuery)
+	upstreamURL, err := buildUpstreamURL(account.endpoint.String(), remotePath, query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 
-	resp, err := p.doRequest(r, accountID, account, upstreamURL)
+	p.mu.RLock()
+	cache := p.videoDataCache
+	p.mu.RUnlock()
+	useCache := cache != nil && cacheableVideoRequest(r)
+	key := proxyVideoDataKey(accountID, account, upstreamURL)
+	if useCache && cache.Serve(w, r, key, version) {
+		return
+	}
+	request := r
+	if useCache {
+		request = r.Clone(r.Context())
+		request.Header.Set("Accept-Encoding", "identity")
+	}
+	resp, err := p.doRequest(request, accountID, account, upstreamURL)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
+	}
+	if useCache {
+		if capture := cache.Capture(key, version, resp); capture != nil {
+			writeCachedProxyResponse(w, resp, capture)
+			return
+		}
 	}
 	writeProxyResponse(w, resp)
 }

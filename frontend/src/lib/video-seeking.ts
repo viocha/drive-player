@@ -47,7 +47,9 @@ export function createVideoSeekController(video: SeekMedia, options: {
 
   const finishFrame = () => {
     if (!active || !seekReady || !frameReady || paintCallback !== null) return;
+    const target = active;
     paintCallback = requestFrame(() => {
+      if (active !== target) return;
       paintCallback = null;
       active = null;
       pump();
@@ -55,7 +57,9 @@ export function createVideoSeekController(video: SeekMedia, options: {
   };
   const watchFrame = () => {
     if (!video.requestVideoFrameCallback) return;
+    const target = active;
     frameCallback = video.requestVideoFrameCallback((_now, frame) => {
+      if (active !== target) return;
       frameCallback = null;
       if (disposed || !active) return;
       // 排除 seek 开始前已经排入合成队列的旧画面。
@@ -67,8 +71,8 @@ export function createVideoSeekController(video: SeekMedia, options: {
       finishFrame();
     });
   };
-  function pump() {
-    if (disposed || active || video.seeking || video.readyState === 0) return;
+  function pump(interrupt = false) {
+    if (disposed || active || (!interrupt && video.seeking) || video.readyState === 0) return;
     const next = pending;
     pending = null;
     if (!next) {
@@ -77,7 +81,7 @@ export function createVideoSeekController(video: SeekMedia, options: {
       settle();
       return;
     }
-    if (Math.abs(next.position - video.currentTime) < 0.005 && video.readyState >= 2) {
+    if (!video.seeking && Math.abs(next.position - video.currentTime) < 0.005 && video.readyState >= 2) {
       pump();
       return;
     }
@@ -89,21 +93,27 @@ export function createVideoSeekController(video: SeekMedia, options: {
     else video.currentTime = next.position;
     notify();
   }
-  const request = (next: number, precise: boolean) => {
+  const request = (next: number, precise: boolean, immediate = false) => {
     if (disposed || !Number.isFinite(next)) return;
     position = Math.max(0, Math.min(next, Number.isFinite(video.duration) ? video.duration : next));
     // 同一目标的 React 重渲染不重复 seek；松手仍可将粗定位提升为精确定位。
-    if (pending?.position === position && pending.precise === precise) return;
+    if (!immediate && pending?.position === position && pending.precise === precise) return;
     if (!pending && active?.position === position && (active.precise || !precise)) return;
+    if (immediate && active) {
+      // 松手后直接提交最终位置，不再等待过时的中间画面或网络请求。
+      cancelCallbacks();
+      active = null;
+    }
     pending = { position, precise };
     notify();
-    pump();
+    pump(immediate);
   };
   const onSeeking = () => {
     if (!active && !pending) position = video.currentTime;
     notify();
   };
   const onSeeked = () => {
+    if (video.seeking) return;
     if (!active) { pump(); return; }
     seekReady = true;
     notify();
@@ -133,6 +143,7 @@ export function createVideoSeekController(video: SeekMedia, options: {
   return {
     get position() { return active || pending || scrubbing ? position : video.currentTime; },
     get pending() { return Boolean(active || pending || video.seeking); },
+    get scrubbing() { return scrubbing; },
     get playbackPaused() { return playbackPaused; },
     setPlaybackPaused(paused: boolean) {
       if (playbackPaused === null || disposed) return false;
@@ -153,7 +164,7 @@ export function createVideoSeekController(video: SeekMedia, options: {
     endScrub() {
       if (disposed || !scrubbing) return;
       scrubbing = false;
-      request(position, true);
+      request(position, true, true);
       notify();
     },
     seek(next: number) {
