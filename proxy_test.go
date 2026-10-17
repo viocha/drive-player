@@ -182,6 +182,9 @@ func TestWebDAVProxySupportsAnonymousWebDAVAndAddsCORS(t *testing.T) {
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Fatalf("Access-Control-Allow-Origin = %q, want *", got)
 	}
+	if got := resp.Header.Get("Access-Control-Expose-Headers"); got != "Content-Range, Accept-Ranges" {
+		t.Fatalf("Access-Control-Expose-Headers = %q, want Content-Range, Accept-Ranges", got)
+	}
 }
 
 func TestWebDAVProxyRoutesMultipleAccountsThroughOneListener(t *testing.T) {

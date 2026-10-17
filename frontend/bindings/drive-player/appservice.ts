@@ -33,8 +33,16 @@ export function ClearVideoSnapshots(remotePath: string, modifiedAt: string): $Ca
     return $Call.ByID(2961201875, remotePath, modifiedAt);
 }
 
+export function DeleteEntry(accountID: string, remotePath: string): $CancellablePromise<void> {
+    return $Call.ByID(3258593699, accountID, remotePath);
+}
+
 export function GetBatteryPercent(): $CancellablePromise<number> {
     return $Call.ByID(2336122500);
+}
+
+export function GetFileLink(accountID: string, remotePath: string, credentials: boolean): $CancellablePromise<string> {
+    return $Call.ByID(1428424368, accountID, remotePath, credentials);
 }
 
 export function GetPlaybackProgress(remotePath: string): $CancellablePromise<$models.PlaybackProgressResult> {
@@ -69,6 +77,13 @@ export function GetVideoMetadataCacheStats(): $CancellablePromise<$models.VideoM
     return $Call.ByID(2775309033);
 }
 
+/**
+ * GetVideoPreviews 只批量读取本地缓存，不触发远程分析或截图。
+ */
+export function GetVideoPreviews(entries: $models.FileEntry[] | null): $CancellablePromise<$models.VideoPreview[] | null> {
+    return $Call.ByID(1860060764, entries);
+}
+
 export function GetVideoSnapshotCacheStats(): $CancellablePromise<$models.VideoSnapshotCacheStats> {
     return $Call.ByID(3393229812);
 }
@@ -77,8 +92,16 @@ export function GetVideoSnapshots(remotePath: string, modifiedAt: string): $Canc
     return $Call.ByID(421301802, remotePath, modifiedAt);
 }
 
+export function ListAccountDirectory(accountID: string, remotePath: string): $CancellablePromise<$models.FileEntry[] | null> {
+    return $Call.ByID(1107661716, accountID, remotePath);
+}
+
 export function ListDirectory(remotePath: string): $CancellablePromise<$models.FileEntry[] | null> {
     return $Call.ByID(1954761069, remotePath);
+}
+
+export function MoveEntry(accountID: string, remotePath: string, targetDirectory: string): $CancellablePromise<string> {
+    return $Call.ByID(2377961121, accountID, remotePath, targetDirectory);
 }
 
 export function OpenStorageDirectory(): $CancellablePromise<void> {
@@ -87,6 +110,13 @@ export function OpenStorageDirectory(): $CancellablePromise<void> {
 
 export function RemoveWebDAVAccount(id: string): $CancellablePromise<$models.AppState> {
     return $Call.ByID(861623966, id);
+}
+
+/**
+ * RenameEntry 只修改主文件名，目录名称整体可编辑。
+ */
+export function RenameEntry(accountID: string, remotePath: string, stem: string, directory: boolean): $CancellablePromise<string> {
+    return $Call.ByID(2217332536, accountID, remotePath, stem, directory);
 }
 
 export function SavePlaybackProgress(remotePath: string, position: number, duration: number): $CancellablePromise<$models.PlaybackProgressStats> {
@@ -101,8 +131,16 @@ export function SaveVideoMetadata(remotePath: string, modifiedAt: string, width:
     return $Call.ByID(4077100431, remotePath, modifiedAt, width, height, frameRate);
 }
 
-export function SaveVideoSnapshot(remotePath: string, modifiedAt: string, position: number, dataURL: string): $CancellablePromise<$models.VideoSnapshotCacheStats> {
-    return $Call.ByID(2624699718, remotePath, modifiedAt, position, dataURL);
+export function SaveVideoSnapshot(remotePath: string, modifiedAt: string, requestedPosition: number, position: number, dataURL: string): $CancellablePromise<$models.VideoSnapshotCacheStats> {
+    return $Call.ByID(2624699718, remotePath, modifiedAt, requestedPosition, position, dataURL);
+}
+
+export function SetCoverPreviewDelay(delayMS: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(1119622722, delayMS);
+}
+
+export function SetCoverPreviewWidth(width: number): $CancellablePromise<$models.AppState> {
+    return $Call.ByID(574839397, width);
 }
 
 export function SetFullscreenHUDSettings(enabled: boolean, offsetPX: number): $CancellablePromise<$models.AppState> {

@@ -14,6 +14,7 @@ export type {
     VideoDataCacheStats,
     VideoMetadataCacheStats,
     VideoMetadataResult,
+    VideoPreview,
     VideoSnapshot,
     VideoSnapshotCacheStats,
     WebDAVAccountState

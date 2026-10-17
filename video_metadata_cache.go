@@ -272,6 +272,9 @@ func isVideoMetadataCacheFile(name string) bool {
 	return strings.EqualFold(filepath.Ext(name), ".json")
 }
 
+// 元信息使用固定的缓存命名空间，与封面默认截帧位置无关。
+const videoMetadataCacheOffsetPercent = 10
+
 func videoMetadataCacheKey(username, remotePath, modifiedAt string, offsetPercent int) string {
 	source := strings.Join([]string{strings.TrimSpace(username), normalizeRemotePath(remotePath), strings.TrimSpace(modifiedAt), fmt.Sprintf("offsetPercent=%d", offsetPercent)}, "\n")
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(source)))

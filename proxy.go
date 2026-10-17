@@ -167,6 +167,7 @@ func (p *WebDAVProxy) VideoSnapshotURL(fileName string) string {
 
 func (p *WebDAVProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Expose-Headers", "Content-Range, Accept-Ranges")
 	if strings.HasPrefix(r.URL.Path, "/video-snapshots/") {
 		p.serveVideoSnapshot(w, r)
 		return

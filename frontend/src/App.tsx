@@ -44,13 +44,6 @@ import {
 } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuGroup,
-  ContextMenuItem,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
-import {
   Card,
   CardContent,
   CardFooter,
@@ -95,15 +88,19 @@ import { DRIVE_VIDEO_CONTROLS_ACTIVITY_EVENT, DriveVideoSkin } from "@/component
 import { analyzeVideoMetadata, type VideoMediaMetadata } from "@/lib/video-metadata";
 import { cn } from "@/lib/utils";
 import { reconcileDirectoryEntries } from "@/lib/directory-refresh";
+import { loadDirectoryVideoPreviews } from "@/lib/directory-video-previews";
+import { withCancellableRequest, withTimeout } from "@/lib/abortable-task";
 import { driveVideoFeatures } from "@/lib/video-features";
 import { VIDEO_SEEK_COMPLETE_EVENT, videoSeekControllers } from "@/lib/video-seeking";
 import { formatPlayerTime } from "@/lib/player-time";
 import { FullscreenHUD, type FullscreenHUDHandle } from "@/components/fullscreen-hud";
 import { VideoDataCacheSettings } from "@/components/video-data-cache-settings";
 import { TitleLinesSettings } from "@/components/title-lines-settings";
-import { fileTitleClassName } from "@/lib/file-title";
-import { waitForPlaybackAvailability, withPlaybackPriority } from "@/lib/playback-priority";
-import { encodeCanvasPNG } from "@/lib/canvas-png";
+import { TruncatedName } from "@/components/truncated-name";
+import { VideoCover } from "@/components/video-cover";
+import { FileActionsMenu } from "@/components/file-actions-menu";
+import { FileActionDialog, type FileAction, type FileActionDialogHandle } from "@/components/file-action-dialog";
+import { captureVideoThumbnail, extractVideoSnapshots } from "@/lib/video-snapshots";
 
 const { Player } = createPlayer({ features: driveVideoFeatures });
 
@@ -148,8 +145,6 @@ const VIDEO_EXTENSIONS = new Set([
   "m2ts",
 ]);
 
-const THUMBNAIL_MAX_WIDTH = 320;
-const VIDEO_METADATA_CONCURRENCY = 1;
 const DIRECTORY_CACHE_SETTINGS_KEY = "drive-player.directory-cache-settings";
 const LAST_DIRECTORY_PATH_KEY_PREFIX = "drive-player.last-directory-path.";
 const DEFAULT_DIRECTORY_CACHE_TTL_MINUTES = 60;
@@ -162,6 +157,7 @@ const MIN_DIRECTORY_CACHE_MAX_SIZE_MB = 1;
 const MAX_DIRECTORY_CACHE_MAX_SIZE_MB = 1024;
 
 type ActiveVideo = {
+  size: number;
   name: string;
   path: string;
   modifiedAt: string;
@@ -344,18 +340,19 @@ function VideoSnapshotPane({
 }) {
   const canExtract = !loading && plannedCount > 0;
   const extractionComplete = plannedCount > 0 && completedCount >= plannedCount;
+  const visibleSnapshots = [...new Map(snapshots.map(snapshot => [snapshot.position, snapshot])).values()];
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border p-3">
         <div className="min-w-0">
           <div className="text-sm font-medium">关键帧截图</div>
-          {(loading || extracting || snapshots.length > 0) && (
+          {(loading || extracting || visibleSnapshots.length > 0) && (
             <div className="mt-0.5 text-xs text-muted-foreground">
               {loading
                 ? "正在读取缓存"
                 : extracting
                   ? `正在提取 ${completedCount}/${plannedCount}`
-                  : `已缓存 ${snapshots.length} 张`}
+                  : `已缓存 ${visibleSnapshots.length} 张`}
             </div>
           )}
         </div>
@@ -373,13 +370,13 @@ function VideoSnapshotPane({
       </div>
 
       <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-content]]:flex [&_[data-slot=scroll-area-content]]:flex-col">
-        {snapshots.length === 0 ? (
+        {visibleSnapshots.length === 0 ? (
           <Empty className="min-h-0 flex-1">
             <EmptyDescription>暂无截图</EmptyDescription>
           </Empty>
         ) : (
           <div className={`grid gap-2 p-2 ${twoColumns ? "grid-cols-2" : "grid-cols-1"}`}>
-            {snapshots.map((snapshot) => (
+            {visibleSnapshots.map((snapshot) => (
               <Button
                 key={snapshot.position}
                 type="button"
@@ -475,14 +472,13 @@ function VideoListPane({
                 aria-current={current ? "true" : undefined}
                 data-current-video={current ? "true" : undefined}
                 disabled={switchingPath !== null}
-                title={video.name}
                 onClick={() => {
                   if (!current) onSelectVideo(video);
                 }}
               >
                 {switching ? <LoaderCircle className="animate-spin" /> : current ? <Play /> : null}
                 <span className="w-0 min-w-0 flex-1 overflow-hidden">
-                  <span className={cn("w-full text-sm font-medium", fileTitleClassName(titleLines))}>{video.name}</span>
+                  <TruncatedName name={video.name} lines={titleLines} className="text-sm font-medium" />
                   <span className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground">
                     <span className="shrink-0">{formatSize(video.size)}</span>
                     <span className="min-w-0 truncate text-right" title={modifiedAt}>{modifiedAt}</span>
@@ -570,6 +566,7 @@ function VideoPlayerSidebar({
 
 function VideoPlayer({
   src,
+  fileSize,
   remotePath,
   modifiedAt,
   initialPosition,
@@ -584,6 +581,7 @@ function VideoPlayer({
   onSelectVideo,
 }: {
   src: string;
+  fileSize: number;
   remotePath: string;
   modifiedAt: string;
   initialPosition: number;
@@ -748,7 +746,7 @@ function VideoPlayer({
         controller.signal,
         sourceVideo,
         async (snapshot) => {
-          const saveRequest = AppService.SaveVideoSnapshot(remotePath, modifiedAt, snapshot.position, snapshot.dataUrl);
+          const saveRequest = AppService.SaveVideoSnapshot(remotePath, modifiedAt, snapshot.requestedPosition, snapshot.position, snapshot.dataUrl);
           const cancelSave = () => saveRequest.cancel("video snapshot extraction aborted");
           controller.signal.addEventListener("abort", cancelSave, { once: true });
           try {
@@ -759,13 +757,14 @@ function VideoPlayer({
           if (controller.signal.aborted) return;
           setVideoSnapshots((current) => (
             [
-              ...current.filter((item) => Math.abs(item.position - snapshot.position) > 0.001),
-              { position: snapshot.position, url: snapshot.dataUrl },
+              ...current.filter((item) => Math.abs(item.requestedPosition - snapshot.requestedPosition) > 0.001),
+              { requestedPosition: snapshot.requestedPosition, position: snapshot.position, url: snapshot.dataUrl },
             ]
               .sort((a, b) => a.position - b.position)
           ));
           setVideoSnapshotCompletedCount((current) => Math.min(plannedTimes.length, current + 1));
         },
+        fileSize,
       );
     } catch (err) {
       if (!(err instanceof DOMException && err.name === "AbortError") && !controller.signal.aborted) {
@@ -777,7 +776,7 @@ function VideoPlayer({
         setVideoSnapshotExtracting(false);
       }
     }
-  }, [modifiedAt, remotePath, src, videoSnapshotExtracting, videoSnapshots, videoSnapshotsLoading]);
+  }, [fileSize, modifiedAt, remotePath, src, videoSnapshotExtracting, videoSnapshots, videoSnapshotsLoading]);
 
   const stopVideoSnapshotExtraction = useCallback(() => {
     videoSnapshotAbortRef.current?.abort();
@@ -1516,82 +1515,6 @@ function isVideo(entry: FileEntry) {
   return VIDEO_EXTENSIONS.has(extension);
 }
 
-function captureVideoThumbnail(src: string, offsetPercent: number, signal: AbortSignal) {
-  return new Promise<{ dataUrl: string; width: number; height: number }>((resolve, reject) => {
-    const video = document.createElement("video");
-    let settled = false;
-    let timeout = 0;
-
-    const cleanup = () => {
-      window.clearTimeout(timeout);
-      signal.removeEventListener("abort", onAbort);
-      video.removeAttribute("src");
-      video.load();
-    };
-
-    const finish = (error?: unknown, result?: { dataUrl: string; width: number; height: number }) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (error) reject(error);
-      else if (result) resolve(result);
-      else reject(new Error("缩略图生成结果为空"));
-    };
-
-    const onAbort = () => finish(new DOMException("Thumbnail generation aborted", "AbortError"));
-
-    const capture = () => {
-      if (signal.aborted || settled) return;
-      if (!video.videoWidth || !video.videoHeight || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-        finish(new Error("视频没有可用画面"));
-        return;
-      }
-      const width = Math.min(THUMBNAIL_MAX_WIDTH, video.videoWidth);
-      const height = Math.max(1, Math.round((video.videoHeight / video.videoWidth) * width));
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext("2d");
-      if (!context) {
-        finish(new Error("无法创建缩略图画布"));
-        return;
-      }
-      context.drawImage(video, 0, 0, width, height);
-      finish(undefined, {
-        dataUrl: canvas.toDataURL("image/webp", 0.72),
-        width: video.videoWidth,
-        height: video.videoHeight,
-      });
-    };
-
-    video.crossOrigin = "anonymous";
-    video.preload = "auto";
-    video.muted = true;
-    video.playsInline = true;
-    video.addEventListener("error", () => finish(new Error("视频缩略图加载失败")), { once: true });
-    video.addEventListener("loadedmetadata", () => {
-      const duration = Number.isFinite(video.duration) ? video.duration : 0;
-      const normalizedPercent = Math.max(0, Math.min(100, offsetPercent));
-      const target = duration > 0 ? (duration * normalizedPercent) / 100 : 0;
-      const captureWhenDataIsReady = () => {
-        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) capture();
-        else video.addEventListener("loadeddata", capture, { once: true });
-      };
-      if (target === 0) {
-        captureWhenDataIsReady();
-        return;
-      }
-      video.addEventListener("seeked", captureWhenDataIsReady, { once: true });
-      video.currentTime = target;
-    }, { once: true });
-
-    signal.addEventListener("abort", onAbort, { once: true });
-    timeout = window.setTimeout(() => finish(new Error("视频缩略图加载超时")), 30_000);
-    video.src = src;
-    video.load();
-  });
-}
-
 function plannedVideoSnapshotTimes(duration: number) {
   if (!Number.isFinite(duration) || duration <= 0) return [];
   let count = 10;
@@ -1600,126 +1523,7 @@ function plannedVideoSnapshotTimes(duration: number) {
 }
 
 function hasVideoSnapshotAt(snapshots: VideoSnapshot[], position: number) {
-  return snapshots.some((snapshot) => Math.abs(snapshot.position - position) <= 0.05);
-}
-
-function videoSnapshotAbortError() {
-  return new DOMException("Video snapshot extraction aborted", "AbortError");
-}
-
-function waitForVideoSnapshotMetadata(video: HTMLVideoElement, signal: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal.aborted) {
-      reject(videoSnapshotAbortError());
-      return;
-    }
-    let timeout = 0;
-    const cleanup = () => {
-      window.clearTimeout(timeout);
-      signal.removeEventListener("abort", onAbort);
-      video.removeEventListener("loadedmetadata", onLoadedMetadata);
-      video.removeEventListener("error", onError);
-    };
-    const finish = (error?: unknown) => {
-      cleanup();
-      if (error) reject(error);
-      else resolve();
-    };
-    const onAbort = () => finish(videoSnapshotAbortError());
-    const onLoadedMetadata = () => finish();
-    const onError = () => finish(new Error("视频截图源加载失败"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
-    video.addEventListener("error", onError, { once: true });
-    timeout = window.setTimeout(() => finish(new Error("视频截图源加载超时")), 30_000);
-  });
-}
-
-function seekVideoForSnapshot(video: HTMLVideoElement, position: number, signal: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal.aborted) {
-      reject(videoSnapshotAbortError());
-      return;
-    }
-    let timeout = 0;
-    const cleanup = () => {
-      window.clearTimeout(timeout);
-      signal.removeEventListener("abort", onAbort);
-      video.removeEventListener("seeked", onSeeked);
-      video.removeEventListener("error", onError);
-    };
-    const finish = (error?: unknown) => {
-      cleanup();
-      if (error) reject(error);
-      else resolve();
-    };
-    const onAbort = () => finish(videoSnapshotAbortError());
-    const onSeeked = () => finish();
-    const onError = () => finish(new Error("视频截图定位失败"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    video.addEventListener("seeked", onSeeked, { once: true });
-    video.addEventListener("error", onError, { once: true });
-    timeout = window.setTimeout(() => finish(new Error("视频截图定位超时")), 30_000);
-    video.currentTime = position;
-  });
-}
-
-async function extractVideoSnapshots(
-  src: string,
-  positions: number[],
-  signal: AbortSignal,
-  foregroundVideo: HTMLVideoElement,
-  onSnapshot: (snapshot: { position: number; dataUrl: string }) => Promise<void>,
-) {
-  const video = document.createElement("video");
-  video.crossOrigin = "anonymous";
-  video.preload = "metadata";
-  video.muted = true;
-  video.playsInline = true;
-
-  const dispose = () => {
-    video.removeAttribute("src");
-    video.load();
-  };
-  const onAbort = () => dispose();
-  signal.addEventListener("abort", onAbort, { once: true });
-
-  try {
-    if (positions.length === 0) return;
-
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("无法创建视频截图画布");
-
-    for (const position of positions) {
-      if (signal.aborted) throw videoSnapshotAbortError();
-      const dataUrl = await withPlaybackPriority(foregroundVideo, signal, async (phase) => {
-        phase.addEventListener("abort", dispose, { once: true });
-        try {
-          if (!video.getAttribute("src")) {
-            const metadata = waitForVideoSnapshotMetadata(video, phase);
-            video.src = src;
-            video.load();
-            await metadata;
-          }
-          if (!video.videoWidth || !video.videoHeight) throw new Error("视频没有可截图的原始画面");
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          await seekVideoForSnapshot(video, position, phase);
-          if (phase.aborted) throw videoSnapshotAbortError();
-          context.drawImage(video, 0, 0, canvas.width, canvas.height);
-          return await encodeCanvasPNG(canvas, phase);
-        } finally {
-          phase.removeEventListener("abort", dispose);
-        }
-      });
-      await waitForPlaybackAvailability(foregroundVideo, signal);
-      await onSnapshot({ position, dataUrl });
-    }
-  } finally {
-    signal.removeEventListener("abort", onAbort);
-    dispose();
-  }
+  return snapshots.some((snapshot) => Math.abs(snapshot.requestedPosition - position) <= 0.05);
 }
 
 function formatSize(bytes: number) {
@@ -2061,6 +1865,8 @@ function App() {
   const [testingAccountIDs, setTestingAccountIDs] = useState<Set<string>>(() => new Set());
   const [accountPendingDelete, setAccountPendingDelete] = useState<WebDAVAccountState | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [fileAction, setFileAction] = useState<FileAction | null>(null);
+  const fileActionDialogRef = useRef<FileActionDialogHandle>(null);
   const [activeVideo, setActiveVideo] = useState<ActiveVideo | null>(null);
   const [videoDialogOpen, setVideoDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -2081,7 +1887,7 @@ function App() {
   const [directoryCacheMaxSizeInput, setDirectoryCacheMaxSizeInput] = useState(String(directoryCacheSettings.maxSizeMB));
   const [videoMetadataMaxAgeInput, setVideoMetadataMaxAgeInput] = useState("30");
   const [videoMetadataMaxSizeInput, setVideoMetadataMaxSizeInput] = useState("16");
-  const [videoMetadataThumbnailOffsetPercentInput, setVideoMetadataThumbnailOffsetPercentInput] = useState("10");
+  const [videoMetadataThumbnailOffsetPercentInput, setVideoMetadataThumbnailOffsetPercentInput] = useState("50");
   const [videoSnapshotMaxAgeInput, setVideoSnapshotMaxAgeInput] = useState("30");
   const [videoSnapshotMaxSizeInput, setVideoSnapshotMaxSizeInput] = useState("512");
   const [playbackMaxAgeInput, setPlaybackMaxAgeInput] = useState("365");
@@ -2256,40 +2062,44 @@ function App() {
   }, []);
 
   const generateAndCacheVideoMetadata = useCallback(async (entry: FileEntry, signal: AbortSignal) => {
-    const playbackURL = await AppService.GetPlaybackURL(entry.path, entry.modifiedAt, entry.size);
-    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    return withTimeout(signal, 10_000, async signal => {
+      const playbackURL = await withCancellableRequest(signal, () => AppService.GetPlaybackURL(entry.path, entry.modifiedAt, entry.size));
+      signal.throwIfAborted();
 
-    const analyzedMetadata = await analyzeVideoMetadata(playbackURL, entry.size, signal);
-    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      const analyzedMetadata = await analyzeVideoMetadata(playbackURL, entry.size, signal);
+      signal.throwIfAborted();
 
-    const mediaMetadata: VideoMediaMetadata = {
-      width: analyzedMetadata.width,
-      height: analyzedMetadata.height,
-      frameRate: analyzedMetadata.frameRate,
-    };
-    if (!hasCompleteVideoMediaMetadata(mediaMetadata)) {
-      throw new Error("视频元信息不完整");
-    }
+      const mediaMetadata: VideoMediaMetadata = {
+        width: analyzedMetadata.width,
+        height: analyzedMetadata.height,
+        frameRate: analyzedMetadata.frameRate,
+      };
+      if (!hasCompleteVideoMediaMetadata(mediaMetadata)) {
+        throw new Error("视频元信息不完整");
+      }
 
-    await AppService.SaveVideoMetadata(
-      entry.path,
-      entry.modifiedAt,
-      mediaMetadata.width,
-      mediaMetadata.height,
-      mediaMetadata.frameRate,
-    );
-    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      await withCancellableRequest(signal, () => AppService.SaveVideoMetadata(
+        entry.path,
+        entry.modifiedAt,
+        mediaMetadata.width,
+        mediaMetadata.height,
+        mediaMetadata.frameRate,
+      ));
+      signal.throwIfAborted();
 
-    return mediaMetadata;
+      return mediaMetadata;
+    });
   }, []);
 
   const generateAndCacheVideoCover = useCallback(async (entry: FileEntry, signal: AbortSignal) => {
-    const playbackURL = await AppService.GetPlaybackURL(entry.path, entry.modifiedAt, entry.size);
-    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-    const thumbnail = await captureVideoThumbnail(playbackURL, state?.videoMetadataThumbnailOffsetPercent ?? 10, signal);
-    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-    await AppService.SaveVideoCover(entry.path, entry.modifiedAt, thumbnail.dataUrl);
-    return thumbnail.dataUrl;
+    return withTimeout(signal, 10_000, async signal => {
+      const playbackURL = await withCancellableRequest(signal, () => AppService.GetPlaybackURL(entry.path, entry.modifiedAt, entry.size));
+      signal.throwIfAborted();
+      const thumbnail = await captureVideoThumbnail(playbackURL, state?.videoMetadataThumbnailOffsetPercent ?? 50, signal, entry.size);
+      signal.throwIfAborted();
+      await withCancellableRequest(signal, () => AppService.SaveVideoCover(entry.path, entry.modifiedAt, thumbnail.dataUrl));
+      return thumbnail.dataUrl;
+    });
   }, [state?.videoMetadataThumbnailOffsetPercent]);
 
   const startThumbnailLoading = useCallback((sourceEntries: FileEntry[], requestId: number) => {
@@ -2298,52 +2108,31 @@ function App() {
     videoMetadataAbortController.current = controller;
     const videos = sourceEntries.filter(isVideo);
 
-    void (async () => {
-      let nextVideoIndex = 0;
-      const worker = async () => {
-        while (!controller.signal.aborted) {
-          const index = nextVideoIndex;
-          nextVideoIndex += 1;
-          if (index >= videos.length) return;
-          const entry = videos[index];
-          try {
-            const [cached, cover] = await Promise.all([
-              AppService.GetVideoMetadata(entry.path, entry.modifiedAt),
-              AppService.GetVideoCover(entry.path, entry.modifiedAt),
-            ]);
-            if (controller.signal.aborted || requestId !== directoryRequestId.current) return;
-            if (cached.found) {
-              const mediaMetadata: VideoMediaMetadata = {
-                width: cached.width,
-                height: cached.height,
-                frameRate: cached.frameRate,
-              };
-              setVideoMetadataByPath((current) => ({ ...current, [entry.path]: mediaMetadata }));
-            }
-            if (cover) setThumbnailImages((current) => ({ ...current, [entry.path]: cover }));
-            // 两类数据独立缺失、独立生成；其中一类失败不阻止另一类展示。
-            await Promise.allSettled([
-              !cached.found ? generateAndCacheVideoMetadata(entry, controller.signal).then((metadata) => {
-                if (!controller.signal.aborted && requestId === directoryRequestId.current) {
-                  setVideoMetadataByPath((current) => ({ ...current, [entry.path]: metadata }));
-                }
-              }) : Promise.resolve(),
-              !cover ? generateAndCacheVideoCover(entry, controller.signal).then((image) => {
-                if (!controller.signal.aborted && requestId === directoryRequestId.current) {
-                  setThumbnailImages((current) => ({ ...current, [entry.path]: image }));
-                }
-              }) : Promise.resolve(),
-            ]);
-          } catch (err) {
-            if (controller.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
-            // A codec, seek, or metadata failure for one video should not block the directory or other video metadata jobs.
-          }
+    const current = () => !controller.signal.aborted && requestId === directoryRequestId.current;
+    void loadDirectoryVideoPreviews(videos, controller.signal, {
+      loadCached: async (entries, signal) => {
+        return (await withCancellableRequest(signal, () => AppService.GetVideoPreviews(entries))) ?? [];
+      },
+      onCached: (previews) => {
+        if (!current()) return;
+        const metadata: Record<string, VideoMediaMetadata> = {};
+        const covers: Record<string, string> = {};
+        for (const preview of previews) {
+          if (preview.metadata.found) metadata[preview.path] = preview.metadata;
+          if (preview.cover) covers[preview.path] = preview.cover;
         }
-      };
-
-      const workerCount = Math.min(VIDEO_METADATA_CONCURRENCY, videos.length);
-      await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    })();
+        setVideoMetadataByPath((value) => ({ ...value, ...metadata }));
+        setThumbnailImages((value) => ({ ...value, ...covers }));
+      },
+      generateMetadata: generateAndCacheVideoMetadata,
+      generateCover: generateAndCacheVideoCover,
+      onMetadata: (entry, metadata) => {
+        if (current()) setVideoMetadataByPath((value) => ({ ...value, [entry.path]: metadata }));
+      },
+      onCover: (entry, cover) => {
+        if (current()) setThumbnailImages((value) => ({ ...value, [entry.path]: cover }));
+      },
+    }).catch(() => { /* 缓存读取失败不影响目录浏览，切换目录会重新读取。 */ });
   }, [generateAndCacheVideoMetadata, generateAndCacheVideoCover]);
 
   const refreshVideoMetadata = useCallback(async (entry: FileEntry) => {
@@ -2489,6 +2278,84 @@ function App() {
     setCanGoForward(directoryForwardHistory.current.length > 0);
   }, []);
 
+  const completeFileAction = useCallback((action: FileAction, renamedPath?: string) => {
+    const session = accountBrowseSessions.current[action.accountID];
+    if (!session) return;
+    const oldPath = action.entry.path;
+    const affected = (value: string) => value === oldPath || value.startsWith(`${oldPath}/`);
+    const oldDirectory = parentDirectory(oldPath);
+    const newDirectory = renamedPath ? parentDirectory(renamedPath) : null;
+    const updateEntries = (source: FileEntry[], directoryPath: string) => {
+      const next = source.filter((entry) => entry.path !== oldPath && entry.path !== renamedPath);
+      if (renamedPath && directoryPath === newDirectory) next.push({ ...action.entry, path: renamedPath, name: renamedPath.slice(renamedPath.lastIndexOf("/") + 1) });
+      return next.sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    };
+    for (const [key, item] of session.directoryCache) {
+      if (affected(key)) session.directoryCache.delete(key);
+      else if (key === oldDirectory || key === newDirectory) {
+        item.entries = updateEntries(item.entries, key);
+        item.sizeBytes = estimateDirectoryCacheSize(key, item.entries);
+      }
+    }
+    const updateMedia = <T,>(source: Record<string, T>) => Object.fromEntries(Object.entries(source).flatMap(([key, value]) => {
+      if (!affected(key)) return [[key, value]];
+      return renamedPath ? [[renamedPath + key.slice(oldPath.length), value]] : [];
+    }));
+    session.entries = updateEntries(session.entries, session.currentPath);
+    session.thumbnailImages = updateMedia(session.thumbnailImages);
+    session.videoMetadataByPath = updateMedia(session.videoMetadataByPath);
+    for (const key of session.scrollPositions.keys()) if (affected(key)) session.scrollPositions.delete(key);
+    session.backHistory = session.backHistory.filter((key) => !affected(key));
+    session.forwardHistory = session.forwardHistory.filter((key) => !affected(key));
+    if (activeBrowseAccountID.current === action.accountID && currentPathRef.current === parentDirectory(oldPath)) {
+      const requestId = ++directoryRequestId.current;
+      directoryRequest.current?.cancel("文件已修改");
+      directoryRequest.current = null;
+      directoryAbortController.current?.abort();
+      videoMetadataAbortController.current?.abort();
+      const next = updateEntries(entriesRef.current, currentPathRef.current);
+      const covers = updateMedia(thumbnailImagesRef.current);
+      const metadata = updateMedia(videoMetadataByPathRef.current);
+      entriesRef.current = next;
+      thumbnailImagesRef.current = covers;
+      videoMetadataByPathRef.current = metadata;
+      setEntries(next);
+      setThumbnailImages(covers);
+      setVideoMetadataByPath(metadata);
+      setLoading(false);
+      directoryBackHistory.current = session.backHistory;
+      directoryForwardHistory.current = session.forwardHistory;
+      syncDirectoryHistoryState();
+      startThumbnailLoading(next.filter((entry) => !covers[entry.path] || !hasCompleteVideoMediaMetadata(metadata[entry.path])), requestId);
+    }
+    refreshAccountBrowseStats();
+  }, [refreshAccountBrowseStats, startThumbnailLoading, syncDirectoryHistoryState]);
+
+  const browseMoveDirectory = useCallback(async (accountID: string, remotePath: string, signal: AbortSignal) => {
+    signal.throwIfAborted();
+    const session = accountBrowseSessions.current[accountID];
+    const now = Date.now();
+    if (session) {
+      pruneDirectoryCache(session.directoryCache, directoryCacheSettingsRef.current, now);
+      const cached = session.directoryCache.get(remotePath);
+      if (cached) { cached.lastAccess = now; return cached.entries; }
+    }
+    const request = AppService.ListAccountDirectory(accountID, remotePath);
+    const cancel = () => request.cancel("停止选择移动目录");
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      signal.throwIfAborted();
+      const entries = (await request) ?? [];
+      signal.throwIfAborted();
+      if (session) {
+        session.directoryCache.set(remotePath, { entries, cachedAt: Date.now(), lastAccess: Date.now(), sizeBytes: estimateDirectoryCacheSize(remotePath, entries) });
+        pruneDirectoryCache(session.directoryCache, directoryCacheSettingsRef.current);
+        refreshAccountBrowseStats();
+      }
+      return entries;
+    } finally { signal.removeEventListener("abort", cancel); }
+  }, [refreshAccountBrowseStats]);
+
   const navigateDirectory = useCallback((targetPath: string) => {
     const normalized = normalizePath(targetPath);
     const current = currentPathRef.current;
@@ -2599,7 +2466,7 @@ function App() {
       if (event.button !== 3 && event.button !== 4) return;
       event.preventDefault();
       event.stopPropagation();
-      if (event.type !== "mousedown" || showSettings || activeVideo) return;
+      if (event.type !== "mousedown" || showSettings || activeVideo || fileAction) return;
       if (event.button === 3) goBackDirectory();
       else goForwardDirectory();
     };
@@ -2612,7 +2479,7 @@ function App() {
       window.removeEventListener("mouseup", handleHistoryMouseButton, true);
       window.removeEventListener("auxclick", handleHistoryMouseButton, true);
     };
-  }, [activeVideo, goBackDirectory, goForwardDirectory, showSettings]);
+  }, [activeVideo, fileAction, goBackDirectory, goForwardDirectory, showSettings]);
 
   useEffect(() => {
     if (!restoringSession && state?.connected) {
@@ -2779,6 +2646,7 @@ function App() {
       AppService.GetPlaybackProgress(entry.path).catch(() => null),
     ]);
     setActiveVideo({
+      size: entry.size,
       name: entry.name,
       path: entry.path,
       modifiedAt: entry.modifiedAt,
@@ -3028,6 +2896,10 @@ function App() {
       __drivePlayerExitFullscreen?: () => boolean;
     };
     backWindow.__drivePlayerHandleBack = () => {
+      if (fileAction) {
+        fileActionDialogRef.current?.close();
+        return true;
+      }
       if (deleteDialogOpen) {
         setDeleteDialogOpen(false);
         return true;
@@ -3055,7 +2927,7 @@ function App() {
     return () => {
       delete backWindow.__drivePlayerHandleBack;
     };
-  }, [accountDialogOpen, closeSettings, deleteDialogOpen, goParentDirectory, isAndroid, showSettings, videoDialogOpen]);
+  }, [accountDialogOpen, closeSettings, deleteDialogOpen, fileAction, goParentDirectory, isAndroid, showSettings, videoDialogOpen]);
 
   const pathParts = useMemo(() => breadcrumbs(currentPath), [currentPath]);
   const visibleEntries = useMemo(
@@ -3282,26 +3154,11 @@ function App() {
                             >
                               <TableCell colSpan={!isMobile && entry.isDirectory && directoryVideos.length > 0 ? 3 : 1} className="px-3 py-2 sm:px-4">
                                 <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-                                  <div className={cn("relative flex shrink-0 items-center justify-center overflow-hidden rounded-md", entry.isDirectory ? "size-6" : "h-12 w-20 bg-muted sm:h-14 sm:w-24")}>
-                                    {entry.isDirectory ? (
+                                  {entry.isDirectory ? <div className="flex size-6 shrink-0 items-center justify-center">
                                       <Folder className="size-5" />
-                                    ) : thumbnailDataURL ? (
-                                      <img
-                                        src={thumbnailDataURL}
-                                        alt=""
-                                        className="h-full w-full object-cover"
-                                      />
-                                    ) : (
-                                      <Play className="size-4" />
-                                    )}
-                                    {refreshingCover && (
-                                      <div className="absolute inset-0 flex items-center justify-center bg-background/60">
-                                        <Spinner aria-label="正在刷新封面" className="size-5" />
-                                      </div>
-                                    )}
-                                  </div>
+                                  </div> : <VideoCover src={thumbnailDataURL} name={entry.name} refreshing={refreshingCover} previewWidth={isMobile ? 0 : state.coverPreviewWidth} previewDelayMS={state.coverPreviewDelayMs} />}
                                   <div className="min-w-0 flex-1">
-                                    <div className={cn("font-medium", fileTitleClassName(state.titleLines))}>{entry.name}</div>
+                                    <TruncatedName name={entry.name} lines={state.titleLines} className="font-medium" />
                                     {isMobile && !entry.isDirectory && (
                                       <div className="mt-1 flex min-w-0 items-center justify-between gap-3 text-xs text-muted-foreground">
                                         <span className="inline-flex min-w-0 max-w-full items-center gap-2.5">
@@ -3332,37 +3189,29 @@ function App() {
                               )}
                             </TableRow>
                           );
-                          if (!isVideo(entry)) {
-                            return <Fragment key={entry.path}>{row}</Fragment>;
-                          }
                           return (
-                            <ContextMenu
+                            <FileActionsMenu
                               key={entry.path}
+                              entry={entry}
+                              accountID={state.activeAccountId}
+                              refreshingMetadata={refreshingMetadata}
+                              refreshingCover={refreshingCover}
+                              onRefreshMetadata={isVideo(entry) ? () => void refreshVideoMetadata(entry) : undefined}
+                              onRefreshCover={isVideo(entry) ? () => void refreshVideoCover(entry) : undefined}
+                              onAction={(kind) => setFileAction({ kind, entry, accountID: state.activeAccountId })}
                               onOpenChange={(open) => {
                                 if (open) {
                                   openContextMenuPath.current = entry.path;
-                                } else if (openContextMenuPath.current === entry.path) {
+                                }
+                              }}
+                              onCloseComplete={() => {
+                                if (openContextMenuPath.current === entry.path) {
                                   openContextMenuPath.current = "";
                                 }
                               }}
                             >
-                              <ContextMenuTrigger render={row} />
-                              <ContextMenuContent>
-                                <ContextMenuGroup>
-                                <ContextMenuItem
-                                  disabled={refreshingMetadata}
-                                  onClick={() => void refreshVideoMetadata(entry)}
-                                >
-                                  <RefreshCw />
-                                  刷新元信息
-                                </ContextMenuItem>
-                                <ContextMenuItem disabled={refreshingCover} onClick={() => void refreshVideoCover(entry)}>
-                                  <RefreshCw />
-                                  刷新封面
-                                </ContextMenuItem>
-                                </ContextMenuGroup>
-                              </ContextMenuContent>
-                            </ContextMenu>
+                              {row}
+                            </FileActionsMenu>
                           );
                         })}
                     </TableBody>
@@ -3381,6 +3230,8 @@ function App() {
               </div>
         </div>
       </main>
+
+      {fileAction && <FileActionDialog ref={fileActionDialogRef} action={fileAction} isMobile={isMobile} titleLines={state.titleLines} initialEntries={getCachedDirectory(parentDirectory(fileAction.entry.path)) ?? undefined} browseDirectory={browseMoveDirectory} onClosed={() => setFileAction(null)} onComplete={completeFileAction} />}
 
       <Dialog
         open={deleteDialogOpen}
@@ -3455,22 +3306,22 @@ function App() {
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex min-w-0 flex-col gap-1">
                             <div className="flex flex-wrap items-center gap-2">
-                              <div className="truncate font-medium">{account.name}</div>
+                              <TruncatedName name={account.name} className="font-medium" />
                               {account.id === state.activeAccountId && <Badge variant="secondary">当前</Badge>}
                             </div>
                             <div className="truncate text-xs text-muted-foreground" title={account.endpoint}>{account.endpoint}</div>
                           </div>
                           <div className="flex shrink-0 items-center gap-2">
                             <Button
-                              variant="outline"
-                              size="sm"
+                              variant="ghost"
+                              size="icon-sm"
                               onClick={() => void testWebDAVAccount(account)}
                               disabled={testingAccountIDs.has(account.id)}
                               aria-busy={testingAccountIDs.has(account.id)}
-                              title="测试根目录访问"
+                              aria-label="测试连接"
+                              title="测试连接"
                             >
-                              {testingAccountIDs.has(account.id) ? <LoaderCircle data-icon="inline-start" className="animate-spin" /> : <Activity data-icon="inline-start" />}
-                              测试
+                              {testingAccountIDs.has(account.id) ? <Spinner aria-label="正在测试连接" /> : <Activity />}
                             </Button>
                             <AccountActionsMenu onEdit={() => {
                                 setEditingAccount(account);
@@ -3503,7 +3354,7 @@ function App() {
                 </CardContent>
               </Card>
 
-              <TitleLinesSettings value={state.titleLines} onSave={setState} />
+              <TitleLinesSettings value={state.titleLines} previewWidth={state.coverPreviewWidth} previewDelayMS={state.coverPreviewDelayMs} isMobile={isMobile} onSave={setState} />
 
               <Card>
                 <CardHeader>
@@ -3871,6 +3722,7 @@ function App() {
             {activeVideo && (
               <VideoPlayer
                 src={activeVideo.url}
+                fileSize={activeVideo.size}
                 remotePath={activeVideo.path}
                 modifiedAt={activeVideo.modifiedAt}
                 initialPosition={activeVideo.resumePosition}

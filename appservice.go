@@ -29,7 +29,7 @@ const (
 	defaultVideoDataMaxSizeMB                  = 512
 	defaultVideoMetadataMaxAgeDays             = 365
 	defaultVideoMetadataMaxSizeMB              = 16
-	defaultVideoMetadataThumbnailOffsetPercent = 10
+	defaultVideoMetadataThumbnailOffsetPercent = 50
 	defaultVideoSnapshotMaxAgeDays             = 365
 	defaultVideoSnapshotMaxSizeMB              = 512
 	defaultPlaybackMaxAgeDays                  = 365
@@ -38,6 +38,7 @@ const (
 	defaultFullscreenHUDSideOffsetPX           = 0
 	defaultMobileLongPressRate                 = 3.0
 	defaultTitleLines                          = 1
+	defaultCoverPreviewWidth                   = 480
 	minVideoMetadataMaxAgeDays                 = 1
 	maxVideoMetadataMaxAgeDays                 = 3650
 	minVideoMetadataMaxSizeMB                  = 16
@@ -59,6 +60,8 @@ const (
 )
 
 type AppState struct {
+	CoverPreviewDelayMS                 int                  `json:"coverPreviewDelayMs"`
+	CoverPreviewWidth                   int                  `json:"coverPreviewWidth"`
 	TitleLines                          int                  `json:"titleLines"`
 	VideoDataMaxAgeMinutes              int                  `json:"videoDataMaxAgeMinutes"`
 	VideoDataMaxSizeMB                  int                  `json:"videoDataMaxSizeMB"`
@@ -104,6 +107,8 @@ type FileEntry struct {
 }
 
 type diskConfig struct {
+	CoverPreviewDelayMS                 int             `json:"coverPreviewDelayMs"`
+	CoverPreviewWidth                   int             `json:"coverPreviewWidth"`
 	TitleLines                          int             `json:"titleLines"`
 	VideoDataMaxAgeMinutes              int             `json:"videoDataMaxAgeMinutes"`
 	VideoDataMaxSizeMB                  int             `json:"videoDataMaxSizeMB"`
@@ -140,6 +145,7 @@ func NewAppService() (*AppService, error) {
 	}
 
 	config := diskConfig{
+		CoverPreviewWidth:                   defaultCoverPreviewWidth,
 		TitleLines:                          defaultTitleLines,
 		VideoDataMaxAgeMinutes:              defaultVideoDataMaxAgeMinutes,
 		VideoDataMaxSizeMB:                  defaultVideoDataMaxSizeMB,
@@ -159,6 +165,12 @@ func NewAppService() (*AppService, error) {
 	}
 	if config.TitleLines < 1 || config.TitleLines > 3 {
 		config.TitleLines = defaultTitleLines
+	}
+	if !validCoverPreviewWidth(config.CoverPreviewWidth) {
+		config.CoverPreviewWidth = defaultCoverPreviewWidth
+	}
+	if config.CoverPreviewDelayMS < 0 || config.CoverPreviewDelayMS > 5000 {
+		config.CoverPreviewDelayMS = 0
 	}
 	if config.VideoDataMaxAgeMinutes < 1 || config.VideoDataMaxAgeMinutes > 10080 {
 		config.VideoDataMaxAgeMinutes = defaultVideoDataMaxAgeMinutes
@@ -307,6 +319,8 @@ func (s *AppService) GetState() AppState {
 		})
 	}
 	return AppState{
+		CoverPreviewDelayMS:                 s.config.CoverPreviewDelayMS,
+		CoverPreviewWidth:                   s.config.CoverPreviewWidth,
 		TitleLines:                          s.config.TitleLines,
 		VideoDataMaxAgeMinutes:              s.config.VideoDataMaxAgeMinutes,
 		VideoDataMaxSizeMB:                  s.config.VideoDataMaxSizeMB,
@@ -565,7 +579,7 @@ func (s *AppService) GetVideoMetadata(remotePath, modifiedAt string) (VideoMetad
 	if err != nil {
 		return VideoMetadataResult{}, err
 	}
-	return s.videoMetadata.Get(videoMetadataCacheKey(accountKey, remotePath, modifiedAt, defaultVideoMetadataThumbnailOffsetPercent))
+	return s.videoMetadata.Get(videoMetadataCacheKey(accountKey, remotePath, modifiedAt, videoMetadataCacheOffsetPercent))
 }
 
 func (s *AppService) SaveVideoMetadata(remotePath, modifiedAt string, width, height int, frameRate float64) (VideoMetadataCacheStats, error) {
@@ -573,7 +587,7 @@ func (s *AppService) SaveVideoMetadata(remotePath, modifiedAt string, width, hei
 	if err != nil {
 		return VideoMetadataCacheStats{}, err
 	}
-	return s.videoMetadata.Save(videoMetadataCacheKey(accountKey, remotePath, modifiedAt, defaultVideoMetadataThumbnailOffsetPercent), width, height, frameRate)
+	return s.videoMetadata.Save(videoMetadataCacheKey(accountKey, remotePath, modifiedAt, videoMetadataCacheOffsetPercent), width, height, frameRate)
 }
 
 func (s *AppService) GetVideoCover(remotePath, modifiedAt string) (string, error) {
@@ -660,19 +674,19 @@ func (s *AppService) GetVideoSnapshots(remotePath, modifiedAt string) ([]VideoSn
 	result := make([]VideoSnapshot, 0, len(entries))
 	for _, entry := range entries {
 		result = append(result, VideoSnapshot{
-			Position: entry.Position,
-			URL:      proxy.VideoSnapshotURL(entry.FileName),
+			Position: entry.Position, RequestedPosition: entry.RequestedPosition,
+			URL: proxy.VideoSnapshotURL(entry.FileName),
 		})
 	}
 	return result, nil
 }
 
-func (s *AppService) SaveVideoSnapshot(remotePath, modifiedAt string, position float64, dataURL string) (VideoSnapshotCacheStats, error) {
+func (s *AppService) SaveVideoSnapshot(remotePath, modifiedAt string, requestedPosition, position float64, dataURL string) (VideoSnapshotCacheStats, error) {
 	accountKey, err := s.currentAccountKey()
 	if err != nil {
 		return VideoSnapshotCacheStats{}, err
 	}
-	return s.videoSnapshots.Save(videoSnapshotCacheKey(accountKey, remotePath, modifiedAt), position, dataURL)
+	return s.videoSnapshots.Save(videoSnapshotCacheKey(accountKey, remotePath, modifiedAt), requestedPosition, position, dataURL)
 }
 
 func (s *AppService) ClearVideoSnapshots(remotePath, modifiedAt string) (VideoSnapshotCacheStats, error) {

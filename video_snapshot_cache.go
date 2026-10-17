@@ -18,8 +18,9 @@ import (
 const maxVideoSnapshotPayloadBytes = 128 * 1024 * 1024
 
 type VideoSnapshot struct {
-	Position float64 `json:"position"`
-	URL      string  `json:"url"`
+	Position          float64 `json:"position"`
+	RequestedPosition float64 `json:"requestedPosition"`
+	URL               string  `json:"url"`
 }
 
 type VideoSnapshotCacheStats struct {
@@ -42,13 +43,17 @@ type videoSnapshotFile struct {
 }
 
 type videoSnapshotEntry struct {
-	Position float64
-	FileName string
+	Position          float64
+	RequestedPosition float64
+	FileName          string
 }
 
 func NewVideoSnapshotCache(dir string, maxAge time.Duration, maxBytes int64) (*VideoSnapshotCache, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create video snapshot cache directory: %w", err)
+	}
+	if err := migrateVideoSnapshotNames(dir); err != nil {
+		return nil, err
 	}
 	cache := &VideoSnapshotCache{dir: dir, maxAge: maxAge, maxBytes: maxBytes}
 	cache.mu.Lock()
@@ -88,7 +93,7 @@ func (c *VideoSnapshotCache) GetSeries(key string) ([]videoSnapshotEntry, error)
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) || !isVideoSnapshotCacheFile(entry.Name()) {
 			continue
 		}
-		position, ok := videoSnapshotPosition(entry.Name(), prefix)
+		requested, position, ok := videoSnapshotPosition(entry.Name(), prefix)
 		if !ok {
 			continue
 		}
@@ -101,16 +106,15 @@ func (c *VideoSnapshotCache) GetSeries(key string) ([]videoSnapshotEntry, error)
 			continue
 		}
 		result = append(result, videoSnapshotEntry{
-			Position: position,
-			FileName: entry.Name(),
+			Position: position, RequestedPosition: requested, FileName: entry.Name(),
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Position < result[j].Position })
 	return result, nil
 }
 
-func (c *VideoSnapshotCache) Save(key string, position float64, dataURL string) (VideoSnapshotCacheStats, error) {
-	if math.IsNaN(position) || math.IsInf(position, 0) || position < 0 {
+func (c *VideoSnapshotCache) Save(key string, requestedPosition, position float64, dataURL string) (VideoSnapshotCacheStats, error) {
+	if math.IsNaN(position) || math.IsInf(position, 0) || position < 0 || math.IsNaN(requestedPosition) || math.IsInf(requestedPosition, 0) || requestedPosition < 0 {
 		return VideoSnapshotCacheStats{}, errors.New("invalid video snapshot position")
 	}
 	data, err := decodeVideoSnapshotDataURL(dataURL)
@@ -124,8 +128,23 @@ func (c *VideoSnapshotCache) Save(key string, position float64, dataURL string) 
 		return VideoSnapshotCacheStats{}, fmt.Errorf("create video snapshot cache directory: %w", err)
 	}
 
-	baseName := fmt.Sprintf("%s--%012d", key, int64(math.Round(position*1000)))
-	return c.saveImageLocked(baseName+".png", data)
+	prefix := fmt.Sprintf("%s--%012d--", key, int64(math.Round(requestedPosition*1000)))
+	fileName := fmt.Sprintf("%s%012d.png", prefix, int64(math.Round(position*1000)))
+	if _, err := c.saveImageLocked(fileName, data); err != nil {
+		return VideoSnapshotCacheStats{}, err
+	}
+	entries, err := os.ReadDir(c.dir)
+	if err != nil {
+		return VideoSnapshotCacheStats{}, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && entry.Name() != fileName && strings.HasPrefix(entry.Name(), prefix) && strings.HasSuffix(entry.Name(), ".png") {
+			if err := os.Remove(filepath.Join(c.dir, entry.Name())); err != nil {
+				return VideoSnapshotCacheStats{}, err
+			}
+		}
+	}
+	return c.pruneLocked(time.Now())
 }
 
 func (c *VideoSnapshotCache) saveImageLocked(fileName string, data []byte) (VideoSnapshotCacheStats, error) {
@@ -330,17 +349,57 @@ func isVideoSnapshotCacheFile(name string) bool {
 	return strings.Contains(name, "--") && (ext == ".png" || ((ext == ".jpg" || ext == ".webp") && strings.HasSuffix(strings.TrimSuffix(name, ext), "--cover")))
 }
 
-func videoSnapshotPosition(name, prefix string) (float64, bool) {
+func videoSnapshotPosition(name, prefix string) (float64, float64, bool) {
 	base := strings.TrimSuffix(name, filepath.Ext(name))
 	value := strings.TrimPrefix(base, prefix)
 	if value == base || value == "" {
-		return 0, false
+		return 0, 0, false
 	}
-	millis, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || millis < 0 {
-		return 0, false
+	parts := strings.Split(value, "--")
+	if len(parts) != 2 {
+		return 0, 0, false
 	}
-	return float64(millis) / 1000, true
+	requested, requestedErr := strconv.ParseInt(parts[0], 10, 64)
+	millis, err := strconv.ParseInt(parts[1], 10, 64)
+	if requestedErr != nil || requested < 0 || err != nil || millis < 0 {
+		return 0, 0, false
+	}
+	return float64(requested) / 1000, float64(millis) / 1000, true
+}
+
+// 启动时一次性为单时间戳缓存补齐目标时间，图片内容和修改时间保持原值。
+func migrateVideoSnapshotNames(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".png") {
+			continue
+		}
+		base := strings.TrimSuffix(entry.Name(), ".png")
+		parts := strings.Split(base, "--")
+		if len(parts) != 2 {
+			continue
+		}
+		if value, err := strconv.ParseInt(parts[1], 10, 64); err != nil || value < 0 {
+			continue
+		}
+		target := filepath.Join(dir, base+"--"+parts[1]+".png")
+		source := filepath.Join(dir, entry.Name())
+		if _, err := os.Stat(target); err == nil {
+			if err := os.Remove(source); err != nil {
+				return err
+			}
+		} else if errors.Is(err, os.ErrNotExist) {
+			if err := os.Rename(source, target); err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
+	}
+	return nil
 }
 
 func videoSnapshotCacheKey(accountKey, remotePath, modifiedAt string) string {

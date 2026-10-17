@@ -1,5 +1,6 @@
 import mediaInfoFactory, { isTrackType, type MediaInfo } from "mediainfo.js";
 import mediaInfoWasmURL from "mediainfo.js/MediaInfoModule.wasm?url";
+import { withAbortSignal } from "./abortable-task";
 
 const MEDIA_INFO_CHUNK_SIZE = 256 * 1024;
 
@@ -29,12 +30,16 @@ function positiveNumber(...values: Array<number | undefined>) {
 
 function getMediaInfo() {
   if (!mediaInfoPromise) {
-    mediaInfoPromise = mediaInfoFactory({
+    const initialization = mediaInfoFactory({
       format: "object",
       full: false,
       coverData: false,
       chunkSize: MEDIA_INFO_CHUNK_SIZE,
       locateFile: () => mediaInfoWasmURL,
+    });
+    mediaInfoPromise = initialization;
+    void initialization.catch(() => {
+      if (mediaInfoPromise === initialization) mediaInfoPromise = null;
     });
   }
   return mediaInfoPromise;
@@ -51,24 +56,27 @@ async function readRemoteChunk(
   if (chunkSize <= 0 || offset >= fileSize) return new Uint8Array();
 
   const end = Math.min(fileSize - 1, offset + chunkSize - 1);
-  const response = await fetch(src, {
-    headers: { Range: `bytes=${offset}-${end}` },
-    cache: "no-store",
-    signal,
+  return withAbortSignal(signal, async () => {
+    const response = await fetch(src, {
+      headers: { Range: `bytes=${offset}-${end}` },
+      cache: "no-store",
+      signal,
+    });
+    assertNotAborted(signal);
+    if (!response.ok) {
+      throw new Error(`媒体元数据读取失败：HTTP ${response.status}`);
+    }
+
+    const wholeFileRequest = offset === 0 && end === fileSize - 1;
+    if (response.status !== 206 && !wholeFileRequest) {
+      response.body?.cancel().catch(() => undefined);
+      throw new Error("媒体服务器不支持 Range 请求，已拒绝整文件下载");
+    }
+
+    const data = new Uint8Array(await response.arrayBuffer());
+    assertNotAborted(signal);
+    return data.length > chunkSize ? data.subarray(0, chunkSize) : data;
   });
-  if (!response.ok) {
-    throw new Error(`媒体元数据读取失败：HTTP ${response.status}`);
-  }
-
-  const wholeFileRequest = offset === 0 && end === fileSize - 1;
-  if (response.status !== 206 && !wholeFileRequest) {
-    response.body?.cancel().catch(() => undefined);
-    throw new Error("媒体服务器不支持 Range 请求，已拒绝整文件下载");
-  }
-
-  const data = new Uint8Array(await response.arrayBuffer());
-  assertNotAborted(signal);
-  return data.length > chunkSize ? data.subarray(0, chunkSize) : data;
 }
 
 async function analyzeVideoMetadataNow(src: string, fileSize: number, signal: AbortSignal): Promise<VideoMediaMetadata> {
@@ -77,7 +85,7 @@ async function analyzeVideoMetadataNow(src: string, fileSize: number, signal: Ab
     throw new Error("无法读取视频大小，不能分析媒体元数据");
   }
 
-  const mediaInfo = await getMediaInfo();
+  const mediaInfo = await withAbortSignal(signal, getMediaInfo);
   assertNotAborted(signal);
   const result = await mediaInfo.analyzeData(
     fileSize,
@@ -107,9 +115,10 @@ async function analyzeVideoMetadataNow(src: string, fileSize: number, signal: Ab
   };
 }
 
-export function analyzeVideoMetadata(src: string, fileSize: number, signal: AbortSignal) {
+export async function analyzeVideoMetadata(src: string, fileSize: number, signal: AbortSignal) {
+  signal.throwIfAborted();
   const run = () => analyzeVideoMetadataNow(src, fileSize, signal);
   const result = mediaInfoAnalysisQueue.then(run, run);
   mediaInfoAnalysisQueue = result.then(() => undefined, () => undefined);
-  return result;
+  return withAbortSignal(signal, () => result);
 }
