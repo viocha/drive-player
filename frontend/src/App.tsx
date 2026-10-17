@@ -79,6 +79,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -3263,6 +3264,14 @@ function App() {
                           );
                           const refreshingMetadata = !entry.isDirectory && refreshingVideoMetadataPaths.has(entry.path);
                           const refreshingCover = !entry.isDirectory && refreshingVideoCoverPaths.has(entry.path);
+                          const metadataContent = (
+                            <span className="inline-flex min-w-0 max-w-full items-center gap-1.5" aria-busy={refreshingMetadata}>
+                              <span className="min-w-0 truncate">{thumbnailResultReady ? formatVideoMediaMetadata(mediaMetadata) : "\u00a0"}</span>
+                              <span className="inline-flex size-4 shrink-0 items-center">
+                                {refreshingMetadata && <Spinner aria-label="正在刷新元信息" />}
+                              </span>
+                            </span>
+                          );
                           const row = (
                             <TableRow
                               className="cursor-pointer active:bg-muted/70 data-pressed:bg-muted/70"
@@ -3285,9 +3294,9 @@ function App() {
                                     ) : (
                                       <Play className="size-4" />
                                     )}
-                                    {(refreshingMetadata || refreshingCover) && (
+                                    {refreshingCover && (
                                       <div className="absolute inset-0 flex items-center justify-center bg-background/60">
-                                        <LoaderCircle className="size-5 animate-spin" />
+                                        <Spinner aria-label="正在刷新封面" className="size-5" />
                                       </div>
                                     )}
                                   </div>
@@ -3297,9 +3306,7 @@ function App() {
                                       <div className="mt-1 flex min-w-0 items-center justify-between gap-3 text-xs text-muted-foreground">
                                         <span className="inline-flex min-w-0 max-w-full items-center gap-2.5">
                                           <span className="shrink-0">{formatSize(entry.size)}</span>
-                                          {thumbnailResultReady && (
-                                            <span className="truncate">{formatVideoMediaMetadata(mediaMetadata)}</span>
-                                          )}
+                                          {(thumbnailResultReady || refreshingMetadata) && metadataContent}
                                         </span>
                                         <span className="shrink-0">{formatDate(entry.modifiedAt)}</span>
                                       </div>
@@ -3317,7 +3324,7 @@ function App() {
                               )}
                               {!isMobile && !entry.isDirectory && (
                                 <TableCell className="px-3 py-2 text-muted-foreground sm:px-4">
-                                  {thumbnailResultReady ? formatVideoMediaMetadata(mediaMetadata) : ""}
+                                  {metadataContent}
                                 </TableCell>
                               )}
                               {!isMobile && (
